@@ -1,8 +1,9 @@
 import {
+  AlertCircle,
   ArrowRight,
   CheckCircle2,
   Film,
-  Info,
+  Loader2,
   Radio,
   Sparkles,
 } from 'lucide-react'
@@ -14,6 +15,8 @@ import {
   type AnalysisConfigState,
 } from '../components/analysis/AnalysisConfigForm'
 import { VideoUploadDropzone } from '../components/analysis/VideoUploadDropzone'
+import { getAuthErrorMessage } from '../services/authService'
+import { uploadVideoFile, type VideoRecord } from '../services/videoService'
 
 export function NewAnalysisPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -23,27 +26,43 @@ export function NewAnalysisPage() {
     alertLanguage: 'Both',
     voiceAlerts: true,
   })
-  const [submittedNotice, setSubmittedNotice] = useState<string | null>(null)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<number>(0)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadedVideo, setUploadedVideo] = useState<VideoRecord | null>(null)
 
   const handleFileSelect = (file: File | null) => {
     setSelectedFile(file)
-    setSubmittedNotice(null)
+    setUploadError(null)
+    setUploadedVideo(null)
+    setUploadProgress(0)
   }
 
   const handleConfigChange = (nextConfig: AnalysisConfigState) => {
     setConfig(nextConfig)
-    setSubmittedNotice(null)
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!selectedFile) return
+    if (!selectedFile || isUploading) return
 
-    setSubmittedNotice(
-      `Ready for "${selectedFile.name}" (${config.profile} profile, ${config.sensitivity} sensitivity, ${config.alertLanguage} alerts, voice ${
-        config.voiceAlerts ? 'on' : 'off'
-      }). Backend upload and AI video analysis will be connected in the next development stage.`,
-    )
+    setIsUploading(true)
+    setUploadProgress(0)
+    setUploadError(null)
+    setUploadedVideo(null)
+
+    try {
+      const record = await uploadVideoFile(selectedFile, (percent) => {
+        setUploadProgress(percent)
+      })
+      setUploadedVideo(record)
+    } catch (error) {
+      setUploadError(
+        getAuthErrorMessage(error, 'Failed to upload video. Please check the file and try again.'),
+      )
+    } finally {
+      setIsUploading(false)
+    }
   }
 
   return (
@@ -134,7 +153,7 @@ export function NewAnalysisPage() {
             <div>
               <h3 className="font-display text-base font-bold text-[#111827]">1. Upload Video</h3>
               <p className="text-xs text-[#64748B]">
-                Choose a recorded video file from your computer to preview and configure.
+                Choose a recorded video file from your computer to preview and upload.
               </p>
             </div>
             <span className="rounded-full border border-slate-200 bg-[#F5F8FC] px-2.5 py-0.5 font-mono text-[10px] font-semibold text-[#64748B]">
@@ -158,7 +177,7 @@ export function NewAnalysisPage() {
                 2. Analysis Configuration
               </h3>
               <p className="text-xs text-[#64748B]">
-                Tailor detection and alert output before running analysis.
+                Tailor detection and alert output before uploading.
               </p>
             </div>
 
@@ -166,27 +185,71 @@ export function NewAnalysisPage() {
           </div>
 
           <div className="mt-7 border-t border-slate-200/80 pt-5">
-            {submittedNotice && (
+            {isUploading && (
+              <div className="mb-4 rounded-xl border border-slate-200 bg-[#F5F8FC] p-3">
+                <div className="flex items-center justify-between text-xs font-semibold text-[#111827]">
+                  <span>Uploading video to storage...</span>
+                  <span className="font-mono text-[#2563EB]">{uploadProgress}%</span>
+                </div>
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    style={{ width: `${uploadProgress}%` }}
+                    className="h-full rounded-full bg-gradient-to-r from-[#2563EB] to-[#7C3AED] transition-all duration-150"
+                  />
+                </div>
+              </div>
+            )}
+
+            {uploadError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-xs leading-relaxed font-medium text-rose-700"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{uploadError}</span>
+              </div>
+            )}
+
+            {uploadedVideo && (
               <div
                 role="status"
-                className="mb-4 flex items-start gap-2.5 rounded-xl border border-[#2563EB]/25 bg-[#EFF6FF]/70 px-3.5 py-3 text-xs leading-relaxed text-[#111827]"
+                className="mb-4 space-y-1.5 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-xs text-emerald-950"
               >
-                <Info className="mt-0.5 h-4 w-4 shrink-0 text-[#2563EB]" />
-                <span>{submittedNotice}</span>
+                <div className="flex items-center gap-2 font-semibold text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  <span>Video Uploaded Successfully</span>
+                </div>
+                <p className="font-mono text-[11px] text-emerald-900">
+                  ID: {uploadedVideo.id} · Status: {uploadedVideo.status}
+                </p>
+                <p className="text-[11px] leading-relaxed text-emerald-800">
+                  Saved to <code className="font-mono">{uploadedVideo.file_path}</code> with{' '}
+                  {config.profile} profile ({config.sensitivity} sensitivity, {config.alertLanguage}{' '}
+                  alerts). AI processing pipeline will run in the next development stage.
+                </p>
               </div>
             )}
 
             <button
               type="submit"
-              disabled={!selectedFile}
+              disabled={!selectedFile || isUploading}
               className={`flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition-all ${
-                selectedFile
+                selectedFile && !isUploading
                   ? 'cursor-pointer bg-gradient-to-r from-[#2563EB] to-[#7C3AED] text-white shadow-md shadow-[#2563EB]/20 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#2563EB]/25'
                   : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
               }`}
             >
-              <span>Start Analysis</span>
-              <ArrowRight className="h-4 w-4" />
+              {isUploading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>Uploading Video ({uploadProgress}%)</span>
+                </>
+              ) : (
+                <>
+                  <span>Start Analysis</span>
+                  <ArrowRight className="h-4 w-4" />
+                </>
+              )}
             </button>
 
             {!selectedFile && (

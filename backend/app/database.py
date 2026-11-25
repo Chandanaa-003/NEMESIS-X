@@ -30,5 +30,6 @@ def get_db() -> Generator[Session, None, None]:
 def init_db() -> None:
     """Import ORM models and create database tables if they do not exist."""
     import app.models.user  # noqa: F401
+    import app.models.video  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

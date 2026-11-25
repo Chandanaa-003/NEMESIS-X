@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     processed_dir: str = "../storage/processed"
     evidence_dir: str = "../storage/evidence"
     reports_dir: str = "../storage/reports"
+    max_upload_size_bytes: int = 500 * 1024 * 1024
+    upload_chunk_size_bytes: int = 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),
@@ -56,6 +58,14 @@ class Settings(BaseSettings):
             db_relative_path = self.database_url[len(prefix) :]
             return f"sqlite:///{(BACKEND_DIR / db_relative_path).as_posix()}"
         return self.database_url
+
+    @property
+    def resolved_upload_dir(self) -> Path:
+        """Resolve upload storage path relative to the backend directory."""
+        raw_path = Path(self.upload_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
 
 
 @lru_cache
