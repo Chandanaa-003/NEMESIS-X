@@ -6,12 +6,12 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { DashboardLayout } from './components/dashboard/DashboardLayout'
 import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
-import { DashboardSectionPage } from './pages/DashboardSectionPage'
 import { EventTimelinePage } from './pages/EventTimelinePage'
 import { EvidenceCenterPage } from './pages/EvidenceCenterPage'
 import { HomePage } from './pages/HomePage'
 import { LiveMonitoringPage } from './pages/LiveMonitoringPage'
 import { LoginPage } from './pages/LoginPage'
+import { MonitoringHistoryPage } from './pages/MonitoringHistoryPage'
 import { NewAnalysisPage } from './pages/NewAnalysisPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
@@ -71,16 +71,10 @@ export function App() {
                 <Route path="/dashboard/live" element={<LiveMonitoringPage />} />
                 <Route path="/dashboard/timeline" element={<EventTimelinePage />} />
                 <Route path="/dashboard/evidence" element={<EvidenceCenterPage />} />
+                <Route path="/dashboard/history" element={<MonitoringHistoryPage />} />
                 <Route
-                  path="/dashboard/history"
-                  element={
-                    <DashboardSectionPage
-                      title="Analysis History"
-                      routePath="/dashboard/history"
-                      iconKey="history"
-                      description="Completed video analysis archive placeholder. Historical runs, durations, and downloadable reports will be managed here."
-                    />
-                  }
+                  path="/dashboard/analytics"
+                  element={<Navigate to="/dashboard/history?tab=analytics" replace />}
                 />
                 <Route path="/dashboard/settings" element={<SettingsPage />} />
               </Route>

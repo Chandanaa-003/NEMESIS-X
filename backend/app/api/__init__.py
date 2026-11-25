@@ -6,6 +6,7 @@ from app.api.events import router as events_router
 from app.api.evidence import router as evidence_router
 from app.api.health import router as health_router
 from app.api.live import router as live_router
+from app.api.monitoring import router as monitoring_router
 from app.api.reports import router as reports_router
 from app.api.settings import router as settings_router
 from app.api.videos import router as videos_router
@@ -23,3 +24,4 @@ api_router.include_router(events_router)
 api_router.include_router(evidence_router)
 api_router.include_router(reports_router)
 api_router.include_router(live_router)
+api_router.include_router(monitoring_router)

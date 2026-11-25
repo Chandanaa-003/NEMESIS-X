@@ -6,6 +6,7 @@ import {
   Radio,
   Settings,
   ShieldCheck,
+  TrendingUp,
   UploadCloud,
   X,
 } from 'lucide-react'
@@ -27,7 +28,8 @@ const DASHBOARD_NAV_ITEMS: SidebarNavItem[] = [
   { label: 'Live Monitoring', to: '/dashboard/live', icon: Radio },
   { label: 'Event Timeline', to: '/dashboard/timeline', icon: Clock },
   { label: 'Evidence Center', to: '/dashboard/evidence', icon: ShieldCheck },
-  { label: 'Analysis History', to: '/dashboard/history', icon: History },
+  { label: 'Monitoring History', to: '/dashboard/history', icon: History },
+  { label: 'Intelligence Analytics', to: '/dashboard/analytics', icon: TrendingUp },
   { label: 'Settings', to: '/dashboard/settings', icon: Settings },
 ]
 
