@@ -1,4 +1,8 @@
-import type { BoundingBoxInfo, TrackSummaryInfo } from './analysisService.ts'
+import type {
+  AnalysisEvidenceListResponse,
+  BoundingBoxInfo,
+  TrackSummaryInfo,
+} from './analysisService.ts'
 import { apiClient } from './api.ts'
 
 export type LiveSessionStatus = 'active' | 'stopped' | 'error'
@@ -126,6 +130,33 @@ export async function getLiveMonitoringStatus(
 ): Promise<LiveSessionStatusResponse> {
   const response = await apiClient.get<LiveSessionStatusResponse>(`/live/${sessionId}/status`)
   return response.data
+}
+
+export async function listLiveMonitoringSessions(): Promise<LiveSessionStatusResponse[]> {
+  const response = await apiClient.get<LiveSessionStatusResponse[]>('/live/sessions')
+  return response.data
+}
+
+export async function getLiveSessionEvidence(
+  sessionId: string,
+): Promise<AnalysisEvidenceListResponse> {
+  const response = await apiClient.get<AnalysisEvidenceListResponse>(`/live/${sessionId}/evidence`)
+  return response.data
+}
+
+export async function downloadLiveSessionPdfReport(sessionId: string): Promise<void> {
+  const response = await apiClient.get<Blob>(`/reports/live/${sessionId}/pdf`, {
+    responseType: 'blob',
+    timeout: 30000,
+  })
+  const url = URL.createObjectURL(response.data)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `nemesis-x-live-report-${sessionId.slice(0, 8)}.pdf`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export async function fetchLiveEventSnapshotBlobUrl(

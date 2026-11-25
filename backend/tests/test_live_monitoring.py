@@ -100,7 +100,9 @@ class LiveMonitoringApiTests(unittest.TestCase):
 
         self.settings = get_settings()
         self._orig_live_dir = self.settings.live_dir
+        self._orig_reports_dir = self.settings.reports_dir
         self.settings.live_dir = str(self.live_dir)
+        self.settings.reports_dir = str(self.tmp_dir / "reports")
 
         self.app = create_application()
 
@@ -140,6 +142,7 @@ class LiveMonitoringApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         live_monitor._active_live_sessions.clear()
         self.settings.live_dir = self._orig_live_dir
+        self.settings.reports_dir = self._orig_reports_dir
         self.engine.dispose()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
@@ -228,6 +231,36 @@ class LiveMonitoringApiTests(unittest.TestCase):
         status_resp = self.client.get(f"/api/v1/live/{sid}/status", headers=self.owner_headers)
         self.assertEqual(status_resp.status_code, 200)
         self.assertEqual(status_resp.json()["events_discovered_count"], 1)
+
+        # Live Evidence Center & Live PDF Report integration checks
+        sessions_resp = self.client.get("/api/v1/live/sessions", headers=self.owner_headers)
+        self.assertEqual(sessions_resp.status_code, 200)
+        self.assertEqual(len(sessions_resp.json()), 1)
+
+        ev_resp = self.client.get(f"/api/v1/live/{sid}/evidence", headers=self.owner_headers)
+        self.assertEqual(ev_resp.status_code, 200)
+        ev_payload = ev_resp.json()
+        self.assertEqual(ev_payload["total_evidence"], 1)
+        self.assertEqual(ev_payload["evidence"][0]["event_id"], evt["id"])
+        self.assertEqual(self.client.get(f"/api/v1/live/{sid}/evidence", headers=self.other_headers).status_code, 404)
+
+        pdf_resp = self.client.get(f"/api/v1/reports/live/{sid}/pdf", headers=self.owner_headers)
+        self.assertEqual(pdf_resp.status_code, 200)
+        self.assertTrue(pdf_resp.content.startswith(b"%PDF-"))
+        self.assertEqual(self.client.get(f"/api/v1/reports/live/{sid}/pdf", headers=self.other_headers).status_code, 404)
+
+        # Second concurrent session keeps independent tracker/event state
+        start_b = self.client.post("/api/v1/live/start", headers=self.owner_headers)
+        self.assertEqual(start_b.status_code, 201)
+        sid_b = start_b.json()["session_id"]
+        self.assertNotEqual(sid, sid_b)
+        self.assertIn(sid, live_monitor._active_live_sessions)
+        self.assertIn(sid_b, live_monitor._active_live_sessions)
+        self.assertIsNot(
+            live_monitor._active_live_sessions[sid].tracker,
+            live_monitor._active_live_sessions[sid_b].tracker,
+        )
+        self.client.post(f"/api/v1/live/{sid_b}/stop", headers=self.owner_headers)
 
         # Stop monitoring cleans up runtime tracker and prevents further frames
         stop_resp = self.client.post(f"/api/v1/live/{sid}/stop", headers=self.owner_headers)

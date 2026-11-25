@@ -18,11 +18,13 @@ import {
 } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { VoiceAlertCenter } from '../components/analysis/VoiceAlertCenter'
 import type { TrackSummaryInfo } from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
 import {
   announceLiveMonitoringEvent,
+  classifyEventPriority,
   setActiveVoiceSettings,
 } from '../services/eventAnnouncementService'
 import {
@@ -58,6 +60,30 @@ function formatDuration(seconds: number): string {
 
 function formatTrackCode(track: Pick<TrackSummaryInfo, 'track_id' | 'track_code'>): string {
   return track.track_code || `T${String(track.track_id).padStart(3, '0')}`
+}
+
+function summarizeTrackMovement(track: TrackSummaryInfo): string {
+  const pts = track.timeline_points
+  if (!pts || pts.length === 0) return 'Position pending'
+  const last = pts[pts.length - 1]
+  if (pts.length === 1) {
+    return `Pos (${Math.round(last.center_x)}, ${Math.round(last.center_y)}) px · 1st obs`
+  }
+  const first = pts[0]
+  const dx = last.center_x - first.center_x
+  const dy = last.center_y - first.center_y
+  const dist = Math.hypot(dx, dy)
+  const dir =
+    dist <= 10
+      ? 'stationary'
+      : Math.abs(dx) >= Math.abs(dy)
+        ? dx > 0
+          ? 'moving right'
+          : 'moving left'
+        : dy > 0
+          ? 'moving down'
+          : 'moving up'
+  return `${dir} (${dist.toFixed(0)} px) · (${Math.round(last.center_x)}, ${Math.round(last.center_y)})`
 }
 
 const SEVERITY_BADGE: Record<string, string> = {
@@ -133,6 +159,7 @@ export function LiveMonitoringPage() {
   const [eventsDiscoveredCount, setEventsDiscoveredCount] = useState<number>(0)
 
   const [currentFrameTimestamp, setCurrentFrameTimestamp] = useState<number | null>(null)
+  const [latestFrameIndex, setLatestFrameIndex] = useState<number>(-1)
   const [overlaySize, setOverlaySize] = useState<{ width: number; height: number } | null>(null)
   const [currentDetections, setCurrentDetections] = useState<LiveDetectionInfo[]>([])
   const [activeTracks, setActiveTracks] = useState<TrackSummaryInfo[]>([])
@@ -250,6 +277,7 @@ export function LiveMonitoringPage() {
       setUniqueTracksCount(res.unique_tracks_count)
       setEventsDiscoveredCount(res.events_discovered_count)
       setCurrentFrameTimestamp(res.timestamp_seconds)
+      setLatestFrameIndex(res.frame_index)
       setOverlaySize({ width: res.frame_width, height: res.frame_height })
       setCurrentDetections(res.detections)
       setActiveTracks(res.active_tracks)
@@ -372,6 +400,7 @@ export function LiveMonitoringPage() {
       setActiveTracks([])
       setLiveEvents([])
       setCurrentFrameTimestamp(0)
+      setLatestFrameIndex(-1)
 
       isMonitoringRef.current = true
       setMonitoringState('active')
@@ -827,32 +856,50 @@ export function LiveMonitoringPage() {
               </p>
             ) : (
               <div className="max-h-64 space-y-2.5 overflow-y-auto pr-1">
-                {activeTracks.map((trk) => (
-                  <div
-                    key={trk.track_id}
-                    className="rounded-xl border border-slate-200/90 bg-[#F5F8FC] p-3 text-xs"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-2 font-bold text-[#111827]">
-                        <span className="rounded bg-[#2563EB] px-1.5 py-0.5 font-mono text-[10px] text-white">
-                          {formatTrackCode(trk)}
+                {activeTracks.map((trk) => {
+                  const isCurrentlyTracked =
+                    isMonitoringActive && trk.last_seen_frame === latestFrameIndex
+
+                  return (
+                    <div
+                      key={trk.track_id}
+                      className="space-y-1.5 rounded-xl border border-slate-200/90 bg-[#F5F8FC] p-3 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-2 font-bold text-[#111827]">
+                          <span className="rounded bg-[#2563EB] px-1.5 py-0.5 font-mono text-[10px] text-white">
+                            {formatTrackCode(trk)}
+                          </span>
+                          <span className="capitalize">{trk.class_name}</span>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 font-mono text-[9px] font-bold uppercase ${
+                              isCurrentlyTracked
+                                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                : 'border-slate-200 bg-white text-[#64748B]'
+                            }`}
+                          >
+                            {isCurrentlyTracked ? 'Active' : 'Last Seen'}
+                          </span>
                         </span>
-                        <span className="capitalize">{trk.class_name}</span>
-                      </span>
-                      <span className="font-mono text-[11px] font-semibold text-[#7C3AED]">
-                        {Math.round(trk.avg_confidence * 100)}% avg
-                      </span>
+                        <span className="font-mono text-[11px] font-semibold text-[#7C3AED]">
+                          {Math.round(trk.avg_confidence * 100)}% avg
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between font-mono text-[11px] text-[#64748B]">
+                        <span>
+                          Last seen: {trk.last_seen_timestamp.toFixed(1)}s (Frame #
+                          {trk.last_seen_frame + 1})
+                        </span>
+                        <span>
+                          {trk.frame_count} obs · {trk.duration_seconds.toFixed(1)}s
+                        </span>
+                      </div>
+                      <p className="font-mono text-[10px] text-[#111827]">
+                        Movement: {summarizeTrackMovement(trk)}
+                      </p>
                     </div>
-                    <div className="mt-1.5 flex items-center justify-between font-mono text-[11px] text-[#64748B]">
-                      <span>
-                        {trk.first_seen_timestamp.toFixed(1)}s → {trk.last_seen_timestamp.toFixed(1)}s
-                      </span>
-                      <span>
-                        {trk.frame_count} obs · {trk.duration_seconds.toFixed(1)}s
-                      </span>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </section>
@@ -887,40 +934,82 @@ export function LiveMonitoringPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {liveEvents.map((evt) => (
-                <article
-                  key={evt.id}
-                  className="flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-[#F5F8FC] p-4 sm:flex-row sm:items-start sm:justify-between"
-                >
-                  <div className="space-y-1.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span
-                        className={`rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold uppercase ${
-                          SEVERITY_BADGE[evt.severity] ?? SEVERITY_BADGE.low
-                        }`}
-                      >
-                        {evt.severity}
-                      </span>
-                      <span className="font-mono text-[11px] font-semibold text-[#2563EB]">
-                        t = {evt.timestamp_seconds.toFixed(1)}s
-                      </span>
-                      <span className="font-mono text-[11px] text-[#7C3AED]">
-                        {Math.round(evt.confidence * 100)}% confidence
-                      </span>
-                    </div>
-                    <h4 className="font-display text-sm font-bold text-[#111827]">{evt.title}</h4>
-                    <p className="text-xs leading-relaxed text-[#64748B]">{evt.description}</p>
-                  </div>
+              {liveEvents.map((evt) => {
+                const priority = classifyEventPriority({
+                  category: evt.category,
+                  severity: evt.severity,
+                  requiresHumanReview: evt.requires_human_review,
+                })
 
-                  {evt.snapshot_url && (
-                    <LiveSnapshotThumbnail
-                      sessionId={evt.session_id}
-                      eventId={evt.id}
-                      title={evt.title}
-                    />
-                  )}
-                </article>
-              ))}
+                return (
+                  <article
+                    key={evt.id}
+                    className="flex flex-col gap-3 rounded-2xl border border-slate-200/90 bg-[#F5F8FC] p-4 sm:flex-row sm:items-start sm:justify-between"
+                  >
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`rounded-full border px-2 py-0.5 font-mono text-[10px] font-bold uppercase ${
+                            SEVERITY_BADGE[priority] ?? SEVERITY_BADGE.low
+                          }`}
+                        >
+                          {priority} priority
+                        </span>
+                        <span className="font-mono text-[11px] font-semibold text-[#2563EB]">
+                          t = {evt.timestamp_seconds.toFixed(1)}s
+                        </span>
+                        <span className="font-mono text-[11px] text-[#7C3AED]">
+                          {Math.round(evt.confidence * 100)}% confidence
+                        </span>
+                      </div>
+
+                      <h4 className="font-display text-sm font-bold text-[#111827]">{evt.title}</h4>
+                      <p className="text-xs leading-relaxed text-[#64748B]">{evt.description}</p>
+
+                      {evt.involved_track_ids.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-semibold text-[#111827]">
+                            Related Tracks:
+                          </span>
+                          {evt.involved_track_ids.map((tid) => (
+                            <span
+                              key={tid}
+                              className="rounded bg-[#2563EB]/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#2563EB]"
+                            >
+                              T{String(tid).padStart(3, '0')}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {evt.why_flagged && (
+                        <p className="rounded-xl border border-slate-200/80 bg-white px-3 py-2 text-[11px] leading-relaxed text-[#64748B]">
+                          <strong className="text-[#111827]">Explanation:</strong> {evt.why_flagged}
+                        </p>
+                      )}
+
+                      {evt.snapshot_url && (
+                        <div>
+                          <Link
+                            to={`/dashboard/evidence?liveSessionId=${evt.session_id}`}
+                            className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-[#2563EB] hover:underline"
+                          >
+                            <span>Evidence Ref: {evt.id.slice(0, 8)} · Open in Evidence Center</span>
+                          </Link>
+                        </div>
+                      )}
+                    </div>
+
+                    {evt.snapshot_url && (
+                      <LiveSnapshotThumbnail
+                        sessionId={evt.session_id}
+                        eventId={evt.id}
+                        title={evt.title}
+                      />
+                    )}
+                  </article>
+                )
+              })}
             </div>
           )}
         </section>

@@ -17,12 +17,26 @@ from app.schemas.live import (
 )
 from app.services.live_monitor import (
     get_live_session_status_payload,
+    list_user_live_sessions,
     process_live_frame,
     start_live_session,
     stop_live_session,
 )
 
 router = APIRouter(prefix="/live", tags=["Live Monitoring"])
+
+
+@router.get(
+    "/sessions",
+    response_model=list[LiveSessionStatusResponse],
+    summary="List live webcam monitoring sessions for the current user",
+)
+def list_live_monitoring_sessions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[LiveSessionStatusResponse]:
+    """Return live webcam monitoring sessions belonging to the authenticated user."""
+    return list_user_live_sessions(user_id=current_user.id, db=db)
 
 
 def _get_owned_live_session(session_id: str, user_id: int, db: Session) -> LiveSession:

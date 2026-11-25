@@ -3,10 +3,12 @@ import {
   ArrowRight,
   Calendar,
   Clock,
+  FileDown,
   Film,
   ImageOff,
   Loader2,
   Maximize2,
+  Radio,
   ShieldCheck,
   Sparkles,
   X,
@@ -25,6 +27,13 @@ import {
   type EvidenceType,
 } from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
+import {
+  downloadLiveSessionPdfReport,
+  fetchLiveEventSnapshotBlobUrl,
+  getLiveSessionEvidence,
+  listLiveMonitoringSessions,
+  type LiveSessionStatusResponse,
+} from '../services/liveService'
 
 type CategoryFilter =
   | 'all'
@@ -77,10 +86,14 @@ interface EvidenceGroup {
 
 function AuthenticatedEvidenceImg({
   evidenceId,
+  liveSessionId,
+  eventId,
   alt,
   className,
 }: {
   evidenceId: string
+  liveSessionId?: string
+  eventId?: string
   alt: string
   className: string
 }) {
@@ -91,7 +104,12 @@ function AuthenticatedEvidenceImg({
     let active = true
     let createdUrl: string | null = null
 
-    fetchEvidenceImageBlobUrl(evidenceId)
+    const loader =
+      liveSessionId && eventId
+        ? fetchLiveEventSnapshotBlobUrl(liveSessionId, eventId)
+        : fetchEvidenceImageBlobUrl(evidenceId)
+
+    loader
       .then((url) => {
         if (!active) {
           URL.revokeObjectURL(url)
@@ -110,7 +128,7 @@ function AuthenticatedEvidenceImg({
         URL.revokeObjectURL(createdUrl)
       }
     }
-  }, [evidenceId])
+  }, [evidenceId, liveSessionId, eventId])
 
   if (failed) {
     return (
@@ -129,9 +147,11 @@ function AuthenticatedEvidenceImg({
 
 function EvidenceGroupCard({
   group,
+  isLiveMode,
   onOpenPreview,
 }: {
   group: EvidenceGroup
+  isLiveMode: boolean
   onOpenPreview: (group: EvidenceGroup, initialType: EvidenceType) => void
 }) {
   const annotated =
@@ -177,6 +197,8 @@ function EvidenceGroupCard({
             >
               <AuthenticatedEvidenceImg
                 evidenceId={annotated.id}
+                liveSessionId={isLiveMode ? group.analysis_id : undefined}
+                eventId={isLiveMode ? group.event_id : undefined}
                 alt={`Annotated frame #${group.frame_number}`}
                 className="aspect-video w-full object-cover"
               />
@@ -259,10 +281,17 @@ function EvidenceGroupCard({
 export function EvidenceCenterPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedId = searchParams.get('analysisId')
+  const requestedLiveId = searchParams.get('liveSessionId')
 
+  const [sourceMode, setSourceMode] = useState<'video' | 'live'>(() =>
+    requestedLiveId ? 'live' : 'video',
+  )
   const [analyses, setAnalyses] = useState<AnalysisListItem[]>([])
+  const [liveSessions, setLiveSessions] = useState<LiveSessionStatusResponse[]>([])
   const [selectedId, setSelectedId] = useState<string>(requestedId || '')
+  const [selectedLiveId, setSelectedLiveId] = useState<string>(requestedLiveId || '')
   const [analysesLoaded, setAnalysesLoaded] = useState(false)
+  const [isDownloadingLivePdf, setIsDownloadingLivePdf] = useState(false)
 
   const [evidenceItems, setEvidenceItems] = useState<EvidenceItemInfo[]>([])
   const [loadedEvidenceFor, setLoadedEvidenceFor] = useState<string | null>(null)
@@ -281,16 +310,26 @@ export function EvidenceCenterPage() {
   useEffect(() => {
     let cancelled = false
 
-    listUserAnalyses()
-      .then((items) => {
+    Promise.all([listUserAnalyses(), listLiveMonitoringSessions().catch(() => [])])
+      .then(([items, liveList]) => {
         if (cancelled) return
         const completed = items.filter((item) => item.status === 'completed')
         setAnalyses(completed)
+        setLiveSessions(liveList)
+
         if (requestedId && completed.some((c) => c.analysis_id === requestedId)) {
           setSelectedId(requestedId)
         } else if (completed.length > 0) {
           setSelectedId(completed[0].analysis_id)
         }
+
+        if (requestedLiveId && liveList.some((s) => s.session_id === requestedLiveId)) {
+          setSelectedLiveId(requestedLiveId)
+          setSourceMode('live')
+        } else if (liveList.length > 0) {
+          setSelectedLiveId(liveList[0].session_id)
+        }
+
         setAnalysesLoaded(true)
       })
       .catch((error) => {
@@ -303,39 +342,80 @@ export function EvidenceCenterPage() {
     return () => {
       cancelled = true
     }
-  }, [requestedId])
+  }, [requestedId, requestedLiveId])
+
+  const activeTargetKey =
+    sourceMode === 'live'
+      ? selectedLiveId
+        ? `live:${selectedLiveId}`
+        : ''
+      : selectedId
+        ? `video:${selectedId}`
+        : ''
 
   useEffect(() => {
-    if (!selectedId) return
+    if (!activeTargetKey) return
     let cancelled = false
 
-    getAnalysisEvidence(selectedId)
+    const loader =
+      sourceMode === 'live'
+        ? getLiveSessionEvidence(selectedLiveId)
+        : getAnalysisEvidence(selectedId)
+
+    loader
       .then((data) => {
         if (!cancelled) {
           setEvidenceItems(data.evidence)
           setErrorMsg(null)
-          setLoadedEvidenceFor(selectedId)
+          setLoadedEvidenceFor(activeTargetKey)
         }
       })
       .catch((error) => {
         if (!cancelled) {
           setErrorMsg(getAuthErrorMessage(error, 'Failed to load evidence artifacts.'))
-          setLoadedEvidenceFor(selectedId)
+          setLoadedEvidenceFor(activeTargetKey)
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [selectedId])
+  }, [activeTargetKey, sourceMode, selectedId, selectedLiveId])
 
   const handleSelectAnalysis = (nextId: string) => {
     setSelectedId(nextId)
     setSearchParams({ analysisId: nextId })
   }
 
+  const handleSelectLiveSession = (nextId: string) => {
+    setSelectedLiveId(nextId)
+    setSearchParams({ liveSessionId: nextId })
+  }
+
+  const handleSwitchMode = (nextMode: 'video' | 'live') => {
+    setSourceMode(nextMode)
+    setEvidenceItems([])
+    if (nextMode === 'live' && selectedLiveId) {
+      setSearchParams({ liveSessionId: selectedLiveId })
+    } else if (nextMode === 'video' && selectedId) {
+      setSearchParams({ analysisId: selectedId })
+    }
+  }
+
+  const handleDownloadLivePdf = async () => {
+    if (!selectedLiveId || isDownloadingLivePdf) return
+    setIsDownloadingLivePdf(true)
+    try {
+      await downloadLiveSessionPdfReport(selectedLiveId)
+    } catch (error) {
+      setErrorMsg(getAuthErrorMessage(error, 'Failed to download live session PDF report.'))
+    } finally {
+      setIsDownloadingLivePdf(false)
+    }
+  }
+
   const handleRunDiscoveryAndEvidence = async () => {
-    if (!selectedId || isGeneratingEvidence) return
+    if (sourceMode === 'live' || !selectedId || isGeneratingEvidence) return
     setIsGeneratingEvidence(true)
     setErrorMsg(null)
     try {
@@ -402,11 +482,11 @@ export function EvidenceCenterPage() {
     })
   }, [groupedEvidence, categoryFilter, dateFilter, timeQuery])
 
-  const isLoadingEvidence = Boolean(selectedId) && loadedEvidenceFor !== selectedId
+  const isLoadingEvidence = Boolean(activeTargetKey) && loadedEvidenceFor !== activeTargetKey
 
   return (
     <div className="space-y-6">
-      {/* Header & Analysis Selector */}
+      {/* Header & Analysis / Live Session Selector */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -423,35 +503,108 @@ export function EvidenceCenterPage() {
               Visual Evidence &amp; Reports
             </h2>
             <p className="mt-1 text-sm text-[#64748B]">
-              Compare original extracted frames with annotated detection and tracking evidence.
+              Inspect saved event evidence frames and intelligence reports from uploaded video
+              analyses and live webcam monitoring sessions.
             </p>
+
+            {/* Source Switcher */}
+            <div className="mt-4 inline-flex rounded-xl border border-slate-200 bg-[#F5F8FC] p-1">
+              <button
+                type="button"
+                onClick={() => handleSwitchMode('video')}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                  sourceMode === 'video'
+                    ? 'bg-white text-[#2563EB] shadow-2xs'
+                    : 'text-[#64748B] hover:text-[#111827]'
+                }`}
+              >
+                <Film className="h-3.5 w-3.5" />
+                <span>Video Analyses ({analyses.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchMode('live')}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                  sourceMode === 'live'
+                    ? 'bg-white text-[#7C3AED] shadow-2xs'
+                    : 'text-[#64748B] hover:text-[#111827]'
+                }`}
+              >
+                <Radio className="h-3.5 w-3.5" />
+                <span>Live Sessions ({liveSessions.length})</span>
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-end gap-3">
-            {analyses.length > 0 && (
-              <div className="w-full sm:w-72">
-                <label
-                  htmlFor="evidence-analysis-select"
-                  className="block text-xs font-semibold text-[#111827]"
-                >
-                  Select Analyzed Video
-                </label>
-                <select
-                  id="evidence-analysis-select"
-                  value={selectedId}
-                  onChange={(e) => handleSelectAnalysis(e.target.value)}
-                  className="mt-1.5 w-full rounded-xl border border-slate-200 bg-[#F5F8FC] px-3.5 py-2.5 text-xs font-semibold text-[#111827] focus:border-[#2563EB] focus:bg-white focus:ring-2 focus:ring-[#2563EB]/20 focus:outline-none"
-                >
-                  {analyses.map((item) => (
-                    <option key={item.analysis_id} value={item.analysis_id}>
-                      {item.video_filename} ({item.extracted_frames} frames)
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {sourceMode === 'video' && analyses.length > 0 && (
+              <>
+                <div className="w-full sm:w-72">
+                  <label
+                    htmlFor="evidence-analysis-select"
+                    className="block text-xs font-semibold text-[#111827]"
+                  >
+                    Select Analyzed Video
+                  </label>
+                  <select
+                    id="evidence-analysis-select"
+                    value={selectedId}
+                    onChange={(e) => handleSelectAnalysis(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 bg-[#F5F8FC] px-3.5 py-2.5 text-xs font-semibold text-[#111827] focus:border-[#2563EB] focus:bg-white focus:ring-2 focus:ring-[#2563EB]/20 focus:outline-none"
+                  >
+                    {analyses.map((item) => (
+                      <option key={item.analysis_id} value={item.analysis_id}>
+                        {item.video_filename} ({item.extracted_frames} frames)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedId && <PdfDownloadButton analysisId={selectedId} />}
+              </>
             )}
 
-            {selectedId && <PdfDownloadButton analysisId={selectedId} />}
+            {sourceMode === 'live' && liveSessions.length > 0 && (
+              <>
+                <div className="w-full sm:w-72">
+                  <label
+                    htmlFor="evidence-live-select"
+                    className="block text-xs font-semibold text-[#111827]"
+                  >
+                    Select Live Monitoring Session
+                  </label>
+                  <select
+                    id="evidence-live-select"
+                    value={selectedLiveId}
+                    onChange={(e) => handleSelectLiveSession(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-slate-200 bg-[#F5F8FC] px-3.5 py-2.5 text-xs font-semibold text-[#111827] focus:border-[#7C3AED] focus:bg-white focus:ring-2 focus:ring-[#7C3AED]/20 focus:outline-none"
+                  >
+                    {liveSessions.map((sess) => (
+                      <option key={sess.session_id} value={sess.session_id}>
+                        {new Date(sess.started_at).toLocaleString()} · {sess.events_discovered_count}{' '}
+                        event(s) ({sess.status})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedLiveId && (
+                  <button
+                    type="button"
+                    onClick={() => void handleDownloadLivePdf()}
+                    disabled={isDownloadingLivePdf}
+                    className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-[#111827] transition-colors hover:border-[#7C3AED]/40 hover:bg-[#F5F8FC] hover:text-[#7C3AED] disabled:opacity-60"
+                  >
+                    {isDownloadingLivePdf ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <FileDown className="h-3.5 w-3.5" />
+                    )}
+                    <span>Download Live PDF Report</span>
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
       </motion.section>
@@ -469,9 +622,9 @@ export function EvidenceCenterPage() {
       {!analysesLoaded ? (
         <div className="flex items-center justify-center rounded-3xl border border-slate-200 bg-white py-14">
           <Loader2 className="mr-2.5 h-5 w-5 animate-spin text-[#2563EB]" />
-          <span className="text-sm font-medium text-[#64748B]">Loading analyses...</span>
+          <span className="text-sm font-medium text-[#64748B]">Loading evidence sources...</span>
         </div>
-      ) : analyses.length === 0 ? (
+      ) : sourceMode === 'video' && analyses.length === 0 ? (
         <div className="rounded-3xl border border-slate-200/90 bg-white p-10 text-center shadow-xs">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#EFF6FF] text-[#2563EB]">
             <Film className="h-6 w-6" />
@@ -488,6 +641,26 @@ export function EvidenceCenterPage() {
             className="mt-5 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-sm"
           >
             <span>Start New Analysis</span>
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
+      ) : sourceMode === 'live' && liveSessions.length === 0 ? (
+        <div className="rounded-3xl border border-slate-200/90 bg-white p-10 text-center shadow-xs">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-[#F5F3FF] text-[#7C3AED]">
+            <Radio className="h-6 w-6" />
+          </div>
+          <h3 className="mt-4 font-display text-lg font-bold text-[#111827]">
+            No Live Monitoring Sessions Recorded Yet
+          </h3>
+          <p className="mx-auto mt-1.5 max-w-md text-sm text-[#64748B]">
+            Start a Live Webcam Monitoring session to capture evidence snapshots when events are
+            discovered.
+          </p>
+          <Link
+            to="/dashboard/live"
+            className="mt-5 inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-sm"
+          >
+            <span>Open Live Monitoring</span>
             <ArrowRight className="h-4 w-4" />
           </Link>
         </div>
@@ -557,7 +730,7 @@ export function EvidenceCenterPage() {
                   : 'Clear the date, timestamp, or category filter to view all evidence items.'}
               </p>
 
-              {groupedEvidence.length === 0 && (
+              {groupedEvidence.length === 0 && sourceMode === 'video' && (
                 <button
                   type="button"
                   onClick={handleRunDiscoveryAndEvidence}
@@ -584,6 +757,7 @@ export function EvidenceCenterPage() {
                 <EvidenceGroupCard
                   key={group.key}
                   group={group}
+                  isLiveMode={sourceMode === 'live'}
                   onOpenPreview={(grp, type) => setPreviewState({ group: grp, activeType: type })}
                 />
               ))}
@@ -662,6 +836,12 @@ export function EvidenceCenterPage() {
                   <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
                     <AuthenticatedEvidenceImg
                       evidenceId={previewState.group.artifacts[previewState.activeType]!.id}
+                      liveSessionId={
+                        sourceMode === 'live' ? previewState.group.analysis_id : undefined
+                      }
+                      eventId={
+                        sourceMode === 'live' ? previewState.group.event_id : undefined
+                      }
                       alt={previewState.group.event_title}
                       className="max-h-[60vh] w-full object-contain"
                     />

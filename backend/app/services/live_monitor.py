@@ -481,6 +481,11 @@ def process_live_frame(
             exit_grace_frames=1,
         )
 
+        detection_summary_lines = [
+            f"{(d.track_code + ' ') if d.track_code else ''}{d.class_name} ({int(round(d.confidence * 100))}%)"
+            for d in frame_detections
+        ]
+
         new_db_events: list[LiveEvent] = []
         for draft in drafts:
             key = (draft.event_type, tuple(draft.involved_track_ids))
@@ -496,6 +501,16 @@ def process_live_frame(
                 involved_track_ids=draft.involved_track_ids,
                 timestamp_seconds=ts,
             )
+            payload = dict(draft.explanation_payload)
+            payload.update(
+                {
+                    "session_id": session_row.id,
+                    "event_id": draft.id,
+                    "detection_count": len(frame_detections),
+                    "detection_summary": detection_summary_lines,
+                    "evidence_image_reference": snap_rel,
+                }
+            )
             new_db_events.append(
                 LiveEvent(
                     id=draft.id,
@@ -505,7 +520,7 @@ def process_live_frame(
                     category=draft.category,
                     title=draft.title,
                     description=draft.description,
-                    explanation_payload=draft.explanation_payload,
+                    explanation_payload=payload,
                     timestamp_seconds=ts,
                     start_timestamp=draft.start_timestamp,
                     end_timestamp=draft.end_timestamp,
@@ -621,3 +636,15 @@ def stop_live_session(
         db.refresh(session_row)
 
     return get_live_session_status_payload(session_row=session_row, db=db)
+
+
+def list_user_live_sessions(*, user_id: int, db: Session) -> list[LiveSessionStatusResponse]:
+    """List live monitoring sessions belonging to the authenticated user, newest first."""
+    sessions = (
+        db.query(LiveSession)
+        .filter(LiveSession.user_id == user_id)
+        .order_by(LiveSession.started_at.desc())
+        .limit(30)
+        .all()
+    )
+    return [get_live_session_status_payload(session_row=s, db=db) for s in sessions]

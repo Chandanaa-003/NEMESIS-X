@@ -16,6 +16,7 @@ from app.models.analysis import Analysis
 from app.models.detection import Detection
 from app.models.event import Event
 from app.models.evidence import Evidence
+from app.models.live_session import LiveEvent, LiveSession
 from app.models.track import Track
 from app.models.video import Video
 
@@ -349,5 +350,145 @@ def generate_analysis_pdf_report(*, analysis: Analysis, db: Session) -> Path:
         )
     )
 
+    doc.build(story)
+    return pdf_path
+
+
+def generate_live_session_pdf_report(*, live_session: LiveSession, db: Session) -> Path:
+    """Build a ReportLab PDF intelligence report for an owned live webcam monitoring session."""
+    settings = get_settings()
+    reports_dir = (settings.resolved_reports_dir / f"live_{live_session.id}").resolve()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    pdf_path = reports_dir / f"nemesis_x_live_report_{live_session.id[:8]}.pdf"
+
+    live_events = (
+        db.query(LiveEvent)
+        .filter(LiveEvent.session_id == live_session.id, LiveEvent.user_id == live_session.user_id)
+        .order_by(LiveEvent.timestamp_seconds.asc(), LiveEvent.frame_index.asc())
+        .all()
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "LiveReportTitle",
+        parent=styles["Heading1"],
+        fontSize=19,
+        textColor=colors.HexColor("#111827"),
+        spaceAfter=4,
+    )
+    h2_style = ParagraphStyle(
+        "LiveSectionHeading",
+        parent=styles["Heading2"],
+        fontSize=13,
+        textColor=colors.HexColor("#2563EB"),
+        spaceBefore=12,
+        spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "LiveBodyText",
+        parent=styles["Normal"],
+        fontSize=9.5,
+        leading=13.5,
+        textColor=colors.HexColor("#111827"),
+    )
+    muted_style = ParagraphStyle(
+        "LiveMutedText",
+        parent=styles["Normal"],
+        fontSize=8.5,
+        leading=12,
+        textColor=colors.HexColor("#475569"),
+    )
+
+    story: list[Any] = [
+        Paragraph("NEMESIS-X Live Monitoring Report", title_style),
+        Paragraph("Live Webcam Intelligence · Evidence &amp; Event Summary", muted_style),
+        Spacer(1, 10),
+        Paragraph("Live Session Metadata", h2_style),
+    ]
+
+    summary_rows = [
+        ["Session ID", live_session.id],
+        ["Status", live_session.status],
+        ["Started At (UTC)", live_session.started_at.strftime("%Y-%m-%d %H:%M:%S")],
+        [
+            "Resolution",
+            f"{live_session.frame_width}x{live_session.frame_height}"
+            if live_session.frame_width and live_session.frame_height
+            else "Unavailable",
+        ],
+        ["Frames Processed", str(live_session.frames_processed)],
+        ["Objects Detected (Total)", str(live_session.total_detections)],
+        ["Unique Tracks", str(live_session.unique_tracks_count)],
+        ["Events Discovered", str(len(live_events))],
+    ]
+    tbl = Table(summary_rows, colWidths=[2.1 * inch, 4.7 * inch])
+    tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F5F8FC")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#111827")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E1")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.extend([tbl, Spacer(1, 10), Paragraph("Discovered Live Events &amp; Evidence", h2_style)])
+
+    live_root = settings.resolved_live_dir
+    if not live_events:
+        story.append(Paragraph("No supported events were discovered during this live session.", body_style))
+    else:
+        for idx, evt in enumerate(live_events, start=1):
+            expl = evt.explanation_payload or {}
+            track_str = ", ".join(f"T{t:03d}" for t in (evt.involved_track_ids or [])) or "None"
+            story.append(
+                Paragraph(
+                    f"<b>{idx}. {evt.title}</b> [{evt.severity.upper()} | Confidence: {int(round(evt.confidence * 100))}%]",
+                    body_style,
+                )
+            )
+            story.append(
+                Paragraph(
+                    f"Timestamp: {_fmt_hms(evt.timestamp_seconds)} | Frame #{evt.frame_index + 1} | Tracks: {track_str}",
+                    muted_style,
+                )
+            )
+            story.append(Paragraph(evt.description, body_style))
+            if evt.snapshot_path:
+                resolved = _resolve_safe_evidence_file(evt.snapshot_path, live_root)
+                if resolved is not None:
+                    try:
+                        img = Image(str(resolved), width=3.2 * inch, height=1.8 * inch, kind="proportional")
+                        story.append(img)
+                    except Exception:
+                        pass
+            if expl.get("why_flagged"):
+                story.append(Paragraph(f"Reason: {expl['why_flagged']}", muted_style))
+            story.append(Spacer(1, 8))
+
+    story.append(Paragraph("Limitations &amp; Human-Review Disclaimer", h2_style))
+    story.append(
+        Paragraph(
+            "Generated automatically from real webcam session detections (CPU-only YOLO11n and "
+            "isolated ByteTrack). Visual heuristics describe possible movement or interactions only "
+            "and must be verified by a human operator.",
+            muted_style,
+        )
+    )
+
+    doc = SimpleDocTemplate(
+        str(pdf_path),
+        pagesize=A4,
+        rightMargin=0.6 * inch,
+        leftMargin=0.6 * inch,
+        topMargin=0.6 * inch,
+        bottomMargin=0.6 * inch,
+    )
     doc.build(story)
     return pdf_path

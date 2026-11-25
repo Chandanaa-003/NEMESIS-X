@@ -10,6 +10,7 @@ from app.database import get_db
 from app.models.analysis import Analysis
 from app.models.event import Event
 from app.models.evidence import Evidence
+from app.models.live_session import LiveEvent, LiveSession
 from app.models.user import User
 from app.schemas.evidence import AnalysisEvidenceListResponse, EvidenceItemInfo
 
@@ -158,3 +159,70 @@ def get_evidence_image(
         )
 
     return FileResponse(path=candidate, media_type="image/jpeg")
+
+
+@router.get(
+    "/live/{session_id}/evidence",
+    response_model=AnalysisEvidenceListResponse,
+    summary="List saved evidence snapshots from a live webcam monitoring session",
+)
+def list_live_session_evidence(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisEvidenceListResponse:
+    """Expose saved live monitoring event snapshots in the standard Evidence Center format."""
+    session_row = (
+        db.query(LiveSession)
+        .filter(LiveSession.id == session_id, LiveSession.user_id == current_user.id)
+        .first()
+    )
+    if session_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Live monitoring session not found.",
+        )
+
+    events = (
+        db.query(LiveEvent)
+        .filter(
+            LiveEvent.session_id == session_row.id,
+            LiveEvent.user_id == current_user.id,
+            LiveEvent.snapshot_path.isnot(None),
+        )
+        .order_by(LiveEvent.timestamp_seconds.asc(), LiveEvent.frame_index.asc())
+        .all()
+    )
+
+    api_prefix = get_settings().api_v1_prefix
+    evidence_items: list[EvidenceItemInfo] = []
+    for ev in events:
+        payload = ev.explanation_payload or {}
+        det_summary = [str(s) for s in payload.get("detection_summary", [])]
+        evidence_items.append(
+            EvidenceItemInfo(
+                id=ev.id,
+                event_id=ev.id,
+                analysis_id=ev.session_id,
+                frame_number=ev.frame_index,
+                timestamp_seconds=ev.timestamp_seconds,
+                evidence_type="annotated_tracking",
+                image_url=f"{api_prefix}/live/{ev.session_id}/events/{ev.id}/snapshot",
+                description=ev.description,
+                event_title=ev.title,
+                event_category=ev.category,
+                event_severity=ev.severity,
+                event_confidence=ev.confidence,
+                why_flagged=str(payload.get("why_flagged", "")),
+                involved_track_ids=[int(t) for t in (ev.involved_track_ids or [])],
+                detection_count=int(payload.get("detection_count", len(det_summary))),
+                detection_summary=det_summary,
+                created_at=ev.created_at,
+            )
+        )
+
+    return AnalysisEvidenceListResponse(
+        analysis_id=session_row.id,
+        total_evidence=len(evidence_items),
+        evidence=evidence_items,
+    )
