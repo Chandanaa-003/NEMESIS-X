@@ -1,9 +1,10 @@
-import { Clock, Film, ImageOff, Layers } from 'lucide-react'
+import { Clock, Film, ImageOff, Layers, ScanSearch } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import {
   fetchExtractedFrameBlobUrl,
   type AnalysisResultsResponse,
+  type DetectedObjectInfo,
 } from '../../services/analysisService'
 
 function formatTimestamp(seconds: number): string {
@@ -16,10 +17,16 @@ function AuthenticatedFrameThumbnail({
   analysisId,
   filename,
   alt,
+  frameWidth,
+  frameHeight,
+  detections,
 }: {
   analysisId: string
   filename: string
   alt: string
+  frameWidth?: number | null
+  frameHeight?: number | null
+  detections: DetectedObjectInfo[]
 }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
@@ -61,13 +68,44 @@ function AuthenticatedFrameThumbnail({
     return <div className="aspect-video w-full animate-pulse bg-slate-100" />
   }
 
+  const canOverlayBoxes =
+    detections.length > 0 &&
+    typeof frameWidth === 'number' &&
+    frameWidth > 0 &&
+    typeof frameHeight === 'number' &&
+    frameHeight > 0
+
   return (
-    <img
-      src={blobUrl}
-      alt={alt}
-      loading="lazy"
-      className="aspect-video w-full bg-slate-100 object-cover"
-    />
+    <div className="relative aspect-video w-full overflow-hidden bg-slate-100">
+      <img src={blobUrl} alt={alt} loading="lazy" className="h-full w-full object-contain" />
+      {canOverlayBoxes && (
+        <svg
+          viewBox={`0 0 ${frameWidth} ${frameHeight}`}
+          preserveAspectRatio="xMidYMid meet"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          aria-hidden="true"
+        >
+          {detections.map((det, idx) => {
+            const width = Math.max(1, det.bbox.x2 - det.bbox.x1)
+            const height = Math.max(1, det.bbox.y2 - det.bbox.y1)
+            const strokeColor = det.class_name === 'person' ? '#2563EB' : '#7C3AED'
+            return (
+              <g key={`${det.class_name}-${idx}`}>
+                <rect
+                  x={det.bbox.x1}
+                  y={det.bbox.y1}
+                  width={width}
+                  height={height}
+                  fill="none"
+                  stroke={strokeColor}
+                  strokeWidth={Math.max(2, frameWidth * 0.005)}
+                />
+              </g>
+            )
+          })}
+        </svg>
+      )}
+    </div>
   )
 }
 
@@ -78,6 +116,8 @@ interface ExtractedFramesGalleryProps {
 export function ExtractedFramesGallery({ results }: ExtractedFramesGalleryProps) {
   const dims = results.summary.original_dimensions
   const duration = results.summary.duration_seconds
+  const detSummary = results.detections_summary
+  const classCounts = Object.entries(detSummary.class_counts ?? {})
 
   return (
     <motion.section
@@ -93,11 +133,11 @@ export function ExtractedFramesGallery({ results }: ExtractedFramesGalleryProps)
           </div>
           <div>
             <h3 className="font-display text-base font-bold text-[#111827]">
-              Extracted Frame Gallery
+              Extracted Frames &amp; Object Detections
             </h3>
             <p className="text-xs text-[#64748B]">
-              {results.frames.length} frames extracted · Sampling interval: every{' '}
-              {results.sampling_interval} frame(s)
+              {results.frames.length} frames · {detSummary.total_detections ?? 0} objects detected
+              {detSummary.model_name ? ` (${detSummary.model_name} · CPU)` : ''}
             </p>
           </div>
         </div>
@@ -118,33 +158,79 @@ export function ExtractedFramesGallery({ results }: ExtractedFramesGalleryProps)
         </div>
       </div>
 
+      {classCounts.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#111827]">
+            <ScanSearch className="h-3.5 w-3.5 text-[#2563EB]" />
+            Detected Categories:
+          </span>
+          {classCounts.map(([className, count]) => (
+            <span
+              key={className}
+              className="rounded-full border border-[#2563EB]/20 bg-[#EFF6FF] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-[#2563EB]"
+            >
+              {className}: {count}
+            </span>
+          ))}
+        </div>
+      )}
+
       {results.frames.length === 0 ? (
         <p className="py-10 text-center text-sm text-[#64748B]">
           No frames were extracted for this video.
         </p>
       ) : (
-        <div className="mt-5 grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {results.frames.map((frame) => (
-            <article
-              key={frame.filename}
-              className="overflow-hidden rounded-2xl border border-slate-200/90 bg-[#F5F8FC] transition-shadow hover:shadow-md hover:shadow-slate-200/70"
-            >
-              <AuthenticatedFrameThumbnail
-                analysisId={results.analysis_id}
-                filename={frame.filename}
-                alt={`Frame ${frame.frame_index + 1} at ${formatTimestamp(frame.timestamp_seconds)}`}
-              />
+        <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          {results.frames.map((frame) => {
+            const topDetections = frame.detections.slice(0, 3)
 
-              <div className="flex items-center justify-between gap-2 bg-white px-3 py-2">
-                <span className="font-mono text-[11px] font-semibold text-[#111827]">
-                  Frame #{frame.frame_index + 1}
-                </span>
-                <span className="rounded bg-[#EFF6FF] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#2563EB]">
-                  {formatTimestamp(frame.timestamp_seconds)}
-                </span>
-              </div>
-            </article>
-          ))}
+            return (
+              <article
+                key={frame.filename}
+                className="overflow-hidden rounded-2xl border border-slate-200/90 bg-[#F5F8FC] transition-shadow hover:shadow-md hover:shadow-slate-200/70"
+              >
+                <AuthenticatedFrameThumbnail
+                  analysisId={results.analysis_id}
+                  filename={frame.filename}
+                  frameWidth={frame.frame_width}
+                  frameHeight={frame.frame_height}
+                  detections={frame.detections}
+                  alt={`Frame ${frame.frame_index + 1} at ${formatTimestamp(frame.timestamp_seconds)}`}
+                />
+
+                <div className="space-y-2 bg-white px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11px] font-semibold text-[#111827]">
+                      Frame #{frame.frame_index + 1}
+                    </span>
+                    <span className="rounded bg-[#EFF6FF] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[#2563EB]">
+                      {formatTimestamp(frame.timestamp_seconds)}
+                    </span>
+                  </div>
+
+                  {topDetections.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {topDetections.map((det, idx) => (
+                        <span
+                          key={`${frame.filename}-${det.class_name}-${idx}`}
+                          className="rounded-md border border-slate-200 bg-[#F5F8FC] px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#111827]"
+                        >
+                          {det.class_name} {Math.round(det.confidence * 100)}%
+                        </span>
+                      ))}
+                      {frame.detections.length > 3 && (
+                        <span className="font-mono text-[10px] text-[#64748B]">
+                          +{frame.detections.length - 3} more
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="font-mono text-[10px] text-[#64748B]">No objects detected</p>
+                  )}
+                </div>
+              </article>
+            )
+          })}
         </div>
       )}
     </motion.section>

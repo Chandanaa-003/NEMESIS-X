@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     max_frame_width: int = 640
     jpeg_quality: int = 85
 
+    yolo_model_name: str = "yolo11n.pt"
+    detection_confidence: float = 0.40
+    detection_image_size: int = 416
+    detection_device: str = "cpu"
+
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
@@ -78,6 +83,13 @@ class Settings(BaseSettings):
         resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved
+
+    @property
+    def resolved_weights_dir(self) -> Path:
+        """Resolve directory used to store downloaded YOLO model weights."""
+        weights_dir = (BACKEND_DIR / "weights").resolve()
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        return weights_dir
 
 
 @lru_cache

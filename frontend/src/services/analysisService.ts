@@ -22,12 +22,29 @@ export interface AnalysisStatusResponse {
   created_at: string
 }
 
+export interface BoundingBoxInfo {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+export interface DetectedObjectInfo {
+  class_id: number
+  class_name: string
+  confidence: number
+  bbox: BoundingBoxInfo
+}
+
 export interface ExtractedFrameInfo {
   frame_index: number
   source_frame_index: number
   timestamp_seconds: number
   filename: string
   url: string
+  frame_width?: number | null
+  frame_height?: number | null
+  detections: DetectedObjectInfo[]
 }
 
 export interface AnalysisSummary {
@@ -40,6 +57,16 @@ export interface AnalysisSummary {
   extracted_count?: number
 }
 
+export interface DetectionsSummary {
+  model_name?: string | null
+  device?: string
+  image_size?: number
+  confidence_threshold?: number
+  total_detections?: number
+  frames_with_detections?: number
+  class_counts?: Record<string, number>
+}
+
 export interface AnalysisResultsResponse {
   analysis_id: string
   video_id: string
@@ -48,6 +75,7 @@ export interface AnalysisResultsResponse {
   sampling_interval: number
   error_message: string | null
   summary: AnalysisSummary
+  detections_summary: DetectionsSummary
   frames: ExtractedFrameInfo[]
   started_at: string | null
   completed_at: string | null
@@ -57,9 +85,11 @@ export interface AnalysisResultsResponse {
 export async function startVideoAnalysis(
   videoId: string,
   targetFps = 1.0,
+  confidenceThreshold = 0.4,
 ): Promise<AnalysisStartResponse> {
   const response = await apiClient.post<AnalysisStartResponse>(`/analysis/${videoId}/start`, {
     target_fps: targetFps,
+    confidence_threshold: confidenceThreshold,
   })
   return response.data
 }

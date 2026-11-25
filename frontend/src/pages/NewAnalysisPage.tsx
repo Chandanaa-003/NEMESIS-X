@@ -28,6 +28,12 @@ import {
 import { getAuthErrorMessage } from '../services/authService'
 import { uploadVideoFile, type VideoRecord } from '../services/videoService'
 
+const SENSITIVITY_CONFIDENCE: Record<AnalysisConfigState['sensitivity'], number> = {
+  Low: 0.6,
+  Balanced: 0.4,
+  High: 0.25,
+}
+
 export function NewAnalysisPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [config, setConfig] = useState<AnalysisConfigState>({
@@ -139,7 +145,8 @@ export function NewAnalysisPage() {
     setAnalysisResults(null)
 
     try {
-      const started = await startVideoAnalysis(uploadedVideo.id, 1.0)
+      const confidenceThreshold = SENSITIVITY_CONFIDENCE[config.sensitivity]
+      const started = await startVideoAnalysis(uploadedVideo.id, 1.0, confidenceThreshold)
       setAnalysisId(started.analysis_id)
       setAnalysisStatus({
         analysis_id: started.analysis_id,
@@ -400,7 +407,9 @@ export function NewAnalysisPage() {
                     <span>
                       {analysisStatus?.status === 'queued'
                         ? 'Queued for Processing...'
-                        : 'Extracting Frames...'}
+                        : (analysisStatus?.progress ?? 0) >= 55
+                          ? 'Detecting Objects (CPU)...'
+                          : 'Extracting Frames...'}
                     </span>
                   </>
                 ) : analysisStatus?.status === 'completed' ? (

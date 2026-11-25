@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -14,10 +15,13 @@ from app.models.analysis import Analysis
 from app.models.user import User
 from app.models.video import Video
 from app.schemas.analysis import (
+    AnalysisDetectionsResponse,
     AnalysisResultsResponse,
     AnalysisStartRequest,
     AnalysisStartResponse,
     AnalysisStatusResponse,
+    BoundingBoxInfo,
+    DetectedObjectInfo,
     ExtractedFrameInfo,
 )
 from app.workers.analysis_worker import run_video_analysis_job
@@ -42,11 +46,74 @@ def _get_owned_analysis(analysis_id: str, user_id: int, db: Session) -> Analysis
     return analysis
 
 
+def _load_detections_data(
+    analysis_id: str,
+    api_prefix: str,
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Read detections.json if present and return summary + per-filename map."""
+    settings = get_settings()
+    detections_path = settings.resolved_processed_dir / analysis_id / "detections.json"
+    if not detections_path.exists():
+        return {}, {}
+
+    try:
+        raw_det = json.loads(detections_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read object detection results.",
+        ) from exc
+
+    summary = {
+        "model_name": raw_det.get("model_name"),
+        "device": raw_det.get("device", "cpu"),
+        "image_size": raw_det.get("image_size"),
+        "confidence_threshold": raw_det.get("confidence_threshold"),
+        "total_detections": raw_det.get("total_detections", 0),
+        "frames_with_detections": raw_det.get("frames_with_detections", 0),
+        "class_counts": raw_det.get("class_counts", {}),
+    }
+
+    by_filename: dict[str, dict[str, Any]] = {}
+    for frame_entry in raw_det.get("frames", []):
+        filename = str(frame_entry.get("filename", ""))
+        if not SAFE_FRAME_FILENAME_RE.match(filename):
+            continue
+        parsed_dets: list[DetectedObjectInfo] = []
+        for det in frame_entry.get("detections", []):
+            bbox = det.get("bbox", {})
+            parsed_dets.append(
+                DetectedObjectInfo(
+                    class_id=int(det["class_id"]),
+                    class_name=str(det["class_name"]),
+                    confidence=float(det["confidence"]),
+                    bbox=BoundingBoxInfo(
+                        x1=float(bbox["x1"]),
+                        y1=float(bbox["y1"]),
+                        x2=float(bbox["x2"]),
+                        y2=float(bbox["y2"]),
+                    ),
+                )
+            )
+        by_filename[filename] = {
+            "frame_index": int(frame_entry["frame_index"]),
+            "source_frame_index": int(frame_entry["source_frame_index"]),
+            "timestamp_seconds": float(frame_entry["timestamp_seconds"]),
+            "filename": filename,
+            "url": f"{api_prefix}/analysis/{analysis_id}/frames/{filename}",
+            "frame_width": frame_entry.get("frame_width"),
+            "frame_height": frame_entry.get("frame_height"),
+            "detections": parsed_dets,
+        }
+
+    return summary, by_filename
+
+
 @router.post(
     "/{video_id}/start",
     response_model=AnalysisStartResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Queue video preprocessing and frame extraction",
+    summary="Queue video frame extraction and object detection",
 )
 def start_analysis(
     video_id: str,
@@ -55,7 +122,7 @@ def start_analysis(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnalysisStartResponse:
-    """Start a background frame-extraction analysis job for an owned uploaded video."""
+    """Start a background preprocessing + YOLO detection job for an owned video."""
     video = (
         db.query(Video)
         .filter(Video.id == video_id, Video.user_id == current_user.id)
@@ -103,7 +170,12 @@ def start_analysis(
             detail="Database error while queuing analysis job.",
         ) from exc
 
-    background_tasks.add_task(run_video_analysis_job, analysis.id, payload.target_fps)
+    background_tasks.add_task(
+        run_video_analysis_job,
+        analysis.id,
+        payload.target_fps,
+        payload.confidence_threshold,
+    )
 
     return AnalysisStartResponse(
         analysis_id=analysis.id,
@@ -122,7 +194,7 @@ def get_analysis_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnalysisStatusResponse:
-    """Return current preprocessing status and progress for an owned analysis job."""
+    """Return current processing status and progress for an owned analysis job."""
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
     return AnalysisStatusResponse(
         analysis_id=analysis.id,
@@ -142,14 +214,14 @@ def get_analysis_status(
 @router.get(
     "/{analysis_id}/results",
     response_model=AnalysisResultsResponse,
-    summary="Get preprocessing summary and extracted frames",
+    summary="Get preprocessing summary, extracted frames, and detections",
 )
 def get_analysis_results(
     analysis_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnalysisResultsResponse:
-    """Return extracted frame metadata and summary for an owned analysis job."""
+    """Return extracted frame metadata, summary, and object detections for an owned job."""
     settings = get_settings()
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
 
@@ -161,6 +233,7 @@ def get_analysis_results(
         "sampling_interval": analysis.sampling_interval,
         "extracted_count": 0,
     }
+    detections_summary: dict[str, Any] = {}
 
     if analysis.status == "completed" and metadata_path.exists():
         try:
@@ -182,10 +255,13 @@ def get_analysis_results(
         }
 
         api_prefix = settings.api_v1_prefix
+        detections_summary, detections_by_file = _load_detections_data(analysis.id, api_prefix)
+
         for item in raw_meta.get("frames", []):
             filename = str(item.get("filename", ""))
             if not SAFE_FRAME_FILENAME_RE.match(filename):
                 continue
+            det_entry = detections_by_file.get(filename)
             frames.append(
                 ExtractedFrameInfo(
                     frame_index=int(item["frame_index"]),
@@ -193,6 +269,9 @@ def get_analysis_results(
                     timestamp_seconds=float(item["timestamp_seconds"]),
                     filename=filename,
                     url=f"{api_prefix}/analysis/{analysis.id}/frames/{filename}",
+                    frame_width=det_entry["frame_width"] if det_entry else None,
+                    frame_height=det_entry["frame_height"] if det_entry else None,
+                    detections=det_entry["detections"] if det_entry else [],
                 )
             )
 
@@ -204,10 +283,40 @@ def get_analysis_results(
         sampling_interval=analysis.sampling_interval,
         error_message=analysis.error_message,
         summary=summary,
+        detections_summary=detections_summary,
         frames=frames,
         started_at=analysis.started_at,
         completed_at=analysis.completed_at,
         created_at=analysis.created_at,
+    )
+
+
+@router.get(
+    "/{analysis_id}/detections",
+    response_model=AnalysisDetectionsResponse,
+    summary="Get structured per-frame object detections for an owned analysis",
+)
+def get_analysis_detections(
+    analysis_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisDetectionsResponse:
+    """Return structured per-frame object detections and summary counts."""
+    settings = get_settings()
+    analysis = _get_owned_analysis(analysis_id, current_user.id, db)
+
+    detections_summary, detections_by_file = _load_detections_data(
+        analysis.id,
+        settings.api_v1_prefix,
+    )
+    frames = [ExtractedFrameInfo(**entry) for entry in detections_by_file.values()]
+
+    return AnalysisDetectionsResponse(
+        analysis_id=analysis.id,
+        video_id=analysis.video_id,
+        status=analysis.status,  # type: ignore[arg-type]
+        summary=detections_summary,
+        frames=frames,
     )
 
 
