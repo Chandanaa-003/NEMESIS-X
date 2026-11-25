@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.video import Video
 from app.schemas.analysis import (
     AnalysisDetectionsResponse,
+    AnalysisListItem,
     AnalysisResultsResponse,
     AnalysisStartRequest,
     AnalysisStartResponse,
@@ -173,6 +174,39 @@ def _load_tracks_data(analysis_id: str) -> tuple[dict[str, Any], list[TrackSumma
         )
 
     return summary, parsed_tracks
+
+
+@router.get(
+    "",
+    response_model=list[AnalysisListItem],
+    summary="List video analyses for the current user",
+)
+def list_user_analyses(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[AnalysisListItem]:
+    """Return all analyses belonging to the authenticated user, newest first."""
+    rows = (
+        db.query(Analysis, Video.original_filename)
+        .join(Video, Analysis.video_id == Video.id)
+        .filter(Analysis.user_id == current_user.id)
+        .order_by(Analysis.created_at.desc())
+        .all()
+    )
+    return [
+        AnalysisListItem(
+            analysis_id=analysis.id,
+            video_id=analysis.video_id,
+            video_filename=filename,
+            status=analysis.status,  # type: ignore[arg-type]
+            progress=analysis.progress,
+            extracted_frames=analysis.extracted_frames,
+            total_frames=analysis.total_frames,
+            created_at=analysis.created_at,
+            completed_at=analysis.completed_at,
+        )
+        for analysis, filename in rows
+    ]
 
 
 @router.post(

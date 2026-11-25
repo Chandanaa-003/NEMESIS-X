@@ -23,6 +23,18 @@ export interface AnalysisStatusResponse {
   created_at: string
 }
 
+export interface AnalysisListItem {
+  analysis_id: string
+  video_id: string
+  video_filename: string
+  status: AnalysisStatus
+  progress: number
+  extracted_frames: number
+  total_frames: number
+  created_at: string
+  completed_at: string | null
+}
+
 export interface BoundingBoxInfo {
   x1: number
   y1: number
@@ -126,6 +138,74 @@ export interface AnalysisTracksResponse {
   tracks: TrackSummaryInfo[]
 }
 
+export type EventSeverity = 'low' | 'medium' | 'high'
+export type EventCategory =
+  | 'people_movement'
+  | 'object_interactions'
+  | 'possible_unattended_objects'
+  | 'other_activities'
+
+export interface EventEvidenceFrame {
+  frame_index: number
+  timestamp_seconds: number
+  filename: string
+  url: string
+}
+
+export interface EventExplanation {
+  observed_sequence: string[]
+  why_flagged: string
+  evidence_timestamps: number[]
+  confidence_note: string
+  requires_human_review: boolean
+}
+
+export interface EventRecordInfo {
+  id: string
+  analysis_id: string
+  event_type: string
+  category: EventCategory
+  title: string
+  description: string
+  start_timestamp: number
+  end_timestamp: number
+  involved_track_ids: number[]
+  confidence: number
+  severity: EventSeverity
+  evidence_frame_ids: number[]
+  evidence_frames: EventEvidenceFrame[]
+  explanation: EventExplanation
+  created_at: string
+}
+
+export interface ImportantTimestampInfo {
+  timestamp_seconds: number
+  event_title: string
+  severity: EventSeverity
+}
+
+export interface EventSummaryInfo {
+  total_detected_objects: number
+  total_unique_tracks: number
+  total_discovered_events: number
+  most_common_categories: Record<string, number>
+  important_timestamps: ImportantTimestampInfo[]
+  events_requiring_review: number
+  summary_message: string
+}
+
+export interface EventDiscoveryResponse {
+  analysis_id: string
+  video_id: string
+  summary: EventSummaryInfo
+  events: EventRecordInfo[]
+}
+
+export async function listUserAnalyses(): Promise<AnalysisListItem[]> {
+  const response = await apiClient.get<AnalysisListItem[]>('/analysis')
+  return response.data
+}
+
 export async function startVideoAnalysis(
   videoId: string,
   targetFps = 1.0,
@@ -150,6 +230,30 @@ export async function getAnalysisResults(analysisId: string): Promise<AnalysisRe
 
 export async function getAnalysisTracks(analysisId: string): Promise<AnalysisTracksResponse> {
   const response = await apiClient.get<AnalysisTracksResponse>(`/analysis/${analysisId}/tracks`)
+  return response.data
+}
+
+export async function discoverAnalysisEvents(
+  analysisId: string,
+): Promise<EventDiscoveryResponse> {
+  const response = await apiClient.post<EventDiscoveryResponse>(
+    `/analysis/${analysisId}/discover-events`,
+  )
+  return response.data
+}
+
+export async function getAnalysisEvents(analysisId: string): Promise<EventDiscoveryResponse> {
+  const response = await apiClient.get<EventDiscoveryResponse>(`/analysis/${analysisId}/events`)
+  return response.data
+}
+
+export async function getAnalysisEventDetail(
+  analysisId: string,
+  eventId: string,
+): Promise<EventRecordInfo> {
+  const response = await apiClient.get<EventRecordInfo>(
+    `/analysis/${analysisId}/events/${eventId}`,
+  )
   return response.data
 }
 

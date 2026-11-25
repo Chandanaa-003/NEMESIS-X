@@ -127,6 +127,20 @@ class AnalysisDetectionsResponse(BaseModel):
     frames: list[ExtractedFrameInfo]
 
 
+class AnalysisListItem(BaseModel):
+    """Summary entry for listing a user's analyses."""
+
+    analysis_id: str
+    video_id: str
+    video_filename: str
+    status: AnalysisStatus
+    progress: int
+    extracted_frames: int
+    total_frames: int
+    created_at: datetime
+    completed_at: datetime | None = None
+
+
 class AnalysisTracksResponse(BaseModel):
     """Persistent object tracks and temporal memory summary for an analysis."""
 

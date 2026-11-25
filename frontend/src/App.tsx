@@ -7,6 +7,7 @@ import { DashboardLayout } from './components/dashboard/DashboardLayout'
 import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { DashboardSectionPage } from './pages/DashboardSectionPage'
+import { EventTimelinePage } from './pages/EventTimelinePage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { NewAnalysisPage } from './pages/NewAnalysisPage'
@@ -76,17 +77,7 @@ export function App() {
                     />
                   }
                 />
-                <Route
-                  path="/dashboard/timeline"
-                  element={
-                    <DashboardSectionPage
-                      title="Event Timeline"
-                      routePath="/dashboard/timeline"
-                      iconKey="timeline"
-                      description="Chronological event discovery timeline placeholder. Temporal event markers and multi-object tracks will populate here once connected to the backend."
-                    />
-                  }
-                />
+                <Route path="/dashboard/timeline" element={<EventTimelinePage />} />
                 <Route
                   path="/dashboard/evidence"
                   element={

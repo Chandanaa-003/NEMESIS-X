@@ -16,6 +16,7 @@ import {
   AnalysisConfigForm,
   type AnalysisConfigState,
 } from '../components/analysis/AnalysisConfigForm'
+import { EventDiscoverySection } from '../components/analysis/EventDiscoverySection'
 import { ExtractedFramesGallery } from '../components/analysis/ExtractedFramesGallery'
 import { VideoUploadDropzone } from '../components/analysis/VideoUploadDropzone'
 import {
@@ -484,9 +485,16 @@ export function NewAnalysisPage() {
         </motion.section>
       </form>
 
-      {/* Extracted Frames Gallery after completion */}
+      {/* Extracted Frames Gallery & Event Discovery after completion */}
       {analysisResults && analysisResults.status === 'completed' && (
-        <ExtractedFramesGallery results={analysisResults} />
+        <>
+          <EventDiscoverySection
+            analysisId={analysisResults.analysis_id}
+            showTimelineLink
+            autoLoadExisting
+          />
+          <ExtractedFramesGallery results={analysisResults} />
+        </>
       )}
     </div>
   )
