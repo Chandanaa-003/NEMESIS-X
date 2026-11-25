@@ -173,6 +173,12 @@ class InteractionAndAnomalyIntelligenceTests(unittest.TestCase):
         types = {e.event_type for e in events}
         self.assertIn("possible_object_placement", types)
         self.assertIn("possible_unattended_object", types)
+        unattended = next(e for e in events if e.event_type == "possible_unattended_object")
+        self.assertIn("anomaly_score", unattended.explanation_payload)
+        self.assertGreater(
+            unattended.explanation_payload["anomaly_score"]["duration_score"],
+            0,
+        )
 
     def test_05_and_06_multiple_people_and_second_person_pickup(self) -> None:
         # P001 approaches O001 and walks away; P002 approaches O001 and moves it
@@ -223,6 +229,7 @@ class InteractionAndAnomalyIntelligenceTests(unittest.TestCase):
         multi = [e for e in events if e.event_type == "multi_person_object_interaction"]
         pickups = [e for e in events if e.event_type == "possible_object_pickup"]
         self.assertEqual(len(multi), 1)
+        self.assertIn("anomaly_score", multi[0].explanation_payload)
         self.assertEqual(multi[0].explanation_payload["person_track_id"], 2)
         self.assertEqual(len(pickups), 1)
         self.assertEqual(pickups[0].explanation_payload["person_track_id"], 2)
@@ -354,7 +361,41 @@ class InteractionAndAnomalyIntelligenceTests(unittest.TestCase):
             frame_height=self.h,
             config=self.cfg,
         )
-        self.assertIn("repeated_movement_near_object", {e.event_type for e in events})
+        repeated = [e for e in events if e.event_type == "repeated_movement_near_object"]
+        self.assertEqual(len(repeated), 1)
+        anomaly_score = repeated[0].explanation_payload["anomaly_score"]
+        self.assertGreater(anomaly_score["total_score"], 0)
+        self.assertIn("Repeated proximity contributes", anomaly_score["explanation"])
+
+    def test_stationary_period_followed_by_rapid_movement_is_sequenced(self) -> None:
+        person = _make_track(
+            track_id=7,
+            class_id=0,
+            class_name="person",
+            points=[
+                (1, 0.0, 400, 500, 0.9),
+                (2, 4.0, 400, 500, 0.9),
+                (3, 8.0, 400, 500, 0.9),
+                (4, 12.0, 400, 500, 0.9),
+                (5, 13.0, 900, 500, 0.9),
+                (6, 14.0, 950, 500, 0.9),
+            ],
+        )
+        events = discover_events_from_data(
+            tracks_data=[person],
+            frame_ts_map={1: 0.0, 2: 4.0, 3: 8.0, 4: 12.0, 5: 13.0, 6: 14.0},
+            frame_width=self.w,
+            frame_height=self.h,
+            config=self.cfg,
+        )
+
+        sequence = next(
+            event for event in events if event.event_type == "stationary_then_sudden_movement"
+        )
+        self.assertEqual(sequence.start_timestamp, 0.0)
+        self.assertEqual(sequence.end_timestamp, 13.0)
+        self.assertEqual(sequence.involved_track_ids, [7])
+        self.assertIn("anomaly_score", sequence.explanation_payload)
 
     def test_12_and_13_recorded_and_live_memory_isolation(self) -> None:
         tmp_dir = Path(tempfile.mkdtemp(prefix="nemesis_rec_test_"))

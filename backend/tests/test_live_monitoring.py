@@ -213,6 +213,42 @@ class LiveMonitoringApiTests(unittest.TestCase):
         self.assertEqual(d2["active_tracks"][0]["frame_count"], 2)
         self.assertEqual(d2["new_events"], [])
 
+        behavior_resp = self.client.get(
+            f"/api/v1/behavior/live/{sid}",
+            headers=self.owner_headers,
+        )
+        self.assertEqual(behavior_resp.status_code, 200)
+        behavior_payload = behavior_resp.json()
+        self.assertEqual(behavior_payload["movement_summaries"][0]["track_code"], "P001")
+        self.assertEqual(behavior_payload["baseline"]["status"], "insufficient_history")
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/behavior/live/{sid}",
+                headers=self.other_headers,
+            ).status_code,
+            404,
+        )
+        sequence_resp = self.client.get(
+            f"/api/v1/behavior/live/{sid}/sequences",
+            params={"track_id": 1, "event_type": "person_entering", "severity": "low"},
+            headers=self.owner_headers,
+        )
+        self.assertEqual(sequence_resp.status_code, 200)
+        self.assertEqual(len(sequence_resp.json()), 1)
+        baseline_resp = self.client.put(
+            f"/api/v1/behavior/live/{sid}/baseline",
+            json={
+                "minimum_tracks": 1,
+                "minimum_history_seconds": 1,
+                "stationary_displacement_threshold": 0.04,
+                "low_movement_speed_threshold": 0.02,
+                "running_like_speed_threshold": 0.22,
+            },
+            headers=self.owner_headers,
+        )
+        self.assertEqual(baseline_resp.status_code, 200)
+        self.assertEqual(baseline_resp.json()["baseline_config"]["minimum_tracks"], 1)
+
         # Ownership & validation checks
         self.assertEqual(
             self.client.get(f"/api/v1/live/{sid}/status", headers=self.other_headers).status_code,
@@ -267,6 +303,16 @@ class LiveMonitoringApiTests(unittest.TestCase):
         self.assertEqual(stop_resp.status_code, 200)
         self.assertEqual(stop_resp.json()["status"], "stopped")
         self.assertNotIn(sid, live_monitor._active_live_sessions)
+        stopped_behavior = self.client.get(
+            f"/api/v1/behavior/live/{sid}",
+            headers=self.owner_headers,
+        )
+        self.assertEqual(stopped_behavior.status_code, 200)
+        self.assertEqual(stopped_behavior.json()["baseline"]["status"], "available")
+        self.assertEqual(
+            stopped_behavior.json()["baseline"]["config"]["minimum_tracks"],
+            1,
+        )
 
         after_stop = self.client.post(
             f"/api/v1/live/{sid}/frame",
@@ -274,6 +320,152 @@ class LiveMonitoringApiTests(unittest.TestCase):
             headers=self.owner_headers,
         )
         self.assertEqual(after_stop.status_code, 409)
+
+    @patch(
+        "app.services.live_monitor._create_isolated_bytetracker",
+        side_effect=lambda _cfg: _FakeByteTracker(),
+    )
+    @patch("app.services.live_monitor.get_detection_model", return_value=_FakeYoloModel())
+    def test_live_zone_crud_confirmations_evidence_and_owner_isolation(
+        self, _mock_model, _mock_tracker
+    ) -> None:
+        started = self.client.post("/api/v1/live/start", headers=self.owner_headers)
+        self.assertEqual(started.status_code, 201)
+        session_id = started.json()["session_id"]
+
+        payload = {
+            "live_session_id": session_id,
+            "name": "Restricted doorway",
+            "zone_type": "restricted",
+            "color": "#E11D48",
+            "polygon": [[0.1, 0.8], [0.6, 0.8], [0.6, 0.99], [0.1, 0.99]],
+            "settings": {
+                "confirmation_frames": 2,
+                "cooldown_seconds": 0,
+                "loiter_seconds": 2,
+                "restricted_group_threshold": 2,
+                "alerts_enabled": True,
+                "voice_alerts_enabled": True,
+            },
+        }
+        created = self.client.post(
+            "/api/v1/zones",
+            json=payload,
+            headers=self.owner_headers,
+        )
+        self.assertEqual(created.status_code, 201)
+        zone_id = created.json()["id"]
+        self.assertEqual(created.json()["polygon"], payload["polygon"])
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/zones?live_session_id={session_id}",
+                headers=self.other_headers,
+            ).status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"/api/v1/zones/{zone_id}",
+                json={"name": "Not owned"},
+                headers=self.other_headers,
+            ).status_code,
+            404,
+        )
+
+        first_frame = self.client.post(
+            f"/api/v1/live/{session_id}/frame",
+            files={"file": ("inside-1.jpg", _make_jpeg(100), "image/jpeg")},
+            data={"timestamp_seconds": "1.0"},
+            headers=self.owner_headers,
+        )
+        self.assertEqual(first_frame.status_code, 200)
+        self.assertEqual(first_frame.json()["new_events"], [])
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/live/{session_id}/latest-frame",
+                headers=self.owner_headers,
+            ).status_code,
+            200,
+        )
+
+        confirmed_frame = self.client.post(
+            f"/api/v1/live/{session_id}/frame",
+            files={"file": ("inside-2.jpg", _make_jpeg(200), "image/jpeg")},
+            data={"timestamp_seconds": "2.0"},
+            headers=self.owner_headers,
+        )
+        self.assertEqual(confirmed_frame.status_code, 200)
+        zone_events = [
+            event
+            for event in confirmed_frame.json()["new_events"]
+            if event["event_type"] == "restricted_zone_entry"
+        ]
+        self.assertEqual(len(zone_events), 1)
+        self.assertEqual(zone_events[0]["zone_id"], zone_id)
+        snapshot = self.client.get(zone_events[0]["snapshot_url"], headers=self.owner_headers)
+        self.assertEqual(snapshot.status_code, 200)
+        duplicate_check = self.client.post(
+            f"/api/v1/live/{session_id}/frame",
+            files={"file": ("inside-3.jpg", _make_jpeg(200), "image/jpeg")},
+            data={"timestamp_seconds": "2.1"},
+            headers=self.owner_headers,
+        )
+        self.assertEqual(duplicate_check.status_code, 200)
+        self.assertNotIn(
+            "restricted_zone_entry",
+            [event["event_type"] for event in duplicate_check.json()["new_events"]],
+        )
+
+        saved_events = self.client.get(
+            f"/api/v1/zones/live/{session_id}/events",
+            headers=self.owner_headers,
+        )
+        self.assertEqual(saved_events.status_code, 200)
+        self.assertEqual(saved_events.json()[0]["zone_name"], "Restricted doorway")
+        activity = self.client.get(
+            f"/api/v1/zones/live/{session_id}/activity",
+            headers=self.owner_headers,
+        )
+        self.assertEqual(activity.status_code, 200)
+        self.assertEqual(activity.json()["total_events"], 1)
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/zones/live/{session_id}/events",
+                headers=self.other_headers,
+            ).status_code,
+            404,
+        )
+
+        updated = self.client.patch(
+            f"/api/v1/zones/{zone_id}",
+            json={"name": "Updated doorway", "color": "#059669"},
+            headers=self.owner_headers,
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["name"], "Updated doorway")
+        self.assertEqual(updated.json()["color"], "#059669")
+        deleted = self.client.delete(f"/api/v1/zones/{zone_id}", headers=self.owner_headers)
+        self.assertEqual(deleted.status_code, 204)
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/zones?live_session_id={session_id}",
+                headers=self.owner_headers,
+            ).json(),
+            [],
+        )
+
+        stopped = self.client.post(
+            f"/api/v1/live/{session_id}/stop",
+            headers=self.owner_headers,
+        )
+        self.assertEqual(stopped.status_code, 200)
+        self.assertEqual(
+            self.client.get(
+                f"/api/v1/live/{session_id}/latest-frame",
+                headers=self.owner_headers,
+            ).status_code,
+            404,
+        )
 
 
 if __name__ == "__main__":

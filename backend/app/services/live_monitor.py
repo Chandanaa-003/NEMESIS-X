@@ -13,7 +13,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import BACKEND_DIR, get_settings
+from app.models.behavior import BehaviorSnapshot
 from app.models.live_session import LiveEvent, LiveSession
+from app.models.zone import Zone
 from app.schemas.analysis import (
     BoundingBoxInfo,
     TrackPositionSnapshot,
@@ -28,10 +30,16 @@ from app.schemas.live import (
     LiveSessionStatusResponse,
 )
 from app.services.detector import get_detection_model
+from app.services.behavior_engine import DEFAULT_BASELINE_CONFIG
 from app.services.event_engine import discover_events_from_data
+from app.services.identity_engine import (
+    get_track_identity_codes,
+    update_live_track_appearances,
+)
 from app.services.interaction_engine import SessionTemporalMemory
 from app.services.track_explorer import format_track_code
 from app.services.tracker import TrackTimelinePoint, _TrackAccumulator
+from app.services.zone_engine import ZoneIntelligenceEngine
 
 MAX_LIVE_FRAME_BYTES = 10 * 1024 * 1024  # 10 MB per captured JPEG frame
 
@@ -55,6 +63,7 @@ class _LiveSessionRuntime:
     track_map: dict[int, _TrackAccumulator] = field(default_factory=dict)
     emitted_event_keys: set[tuple[str, tuple[int, ...]]] = field(default_factory=set)
     memory: SessionTemporalMemory | None = None
+    zone_engine: ZoneIntelligenceEngine = field(default_factory=ZoneIntelligenceEngine)
     session_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
@@ -83,6 +92,30 @@ def _safe_relative_live_path(absolute_path: Path) -> str:
         return absolute_path.relative_to(project_root).as_posix()
     except ValueError:
         return absolute_path.as_posix()
+
+
+def _save_live_latest_frame(session_id: str, frame_img: np.ndarray) -> None:
+    """Keep one small current-frame preview for authorized zone editing and overlays."""
+    settings = get_settings()
+    session_dir = (settings.resolved_live_dir / session_id).resolve()
+    session_dir.mkdir(parents=True, exist_ok=True)
+    target_path = (session_dir / "latest.jpg").resolve()
+    if target_path.parent != session_dir:
+        raise ValueError("Invalid live preview storage path.")
+    height, width = frame_img.shape[:2]
+    preview = frame_img
+    if width > 640:
+        preview = cv2.resize(
+            frame_img,
+            (640, max(1, round(height * (640 / float(width))))),
+            interpolation=cv2.INTER_AREA,
+        )
+    ok, encoded = cv2.imencode(".jpg", preview, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+    if not ok:
+        raise OSError("Unable to encode live preview frame.")
+    temporary_path = target_path.with_suffix(".tmp")
+    temporary_path.write_bytes(encoded.tobytes())
+    temporary_path.replace(target_path)
 
 
 def _build_track_summaries(runtime: _LiveSessionRuntime) -> list[TrackSummaryInfo]:
@@ -196,6 +229,7 @@ def _save_live_event_snapshot(
     detections: list[LiveDetectionInfo],
     involved_track_ids: list[int],
     timestamp_seconds: float,
+    zones: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Save an annotated JPEG snapshot for a newly discovered live event."""
     settings = get_settings()
@@ -206,6 +240,38 @@ def _save_live_event_snapshot(
         return None
 
     canvas = frame_img.copy()
+    for zone in zones or []:
+        points = [
+            (
+                int(round(float(point[0]) * canvas.shape[1])),
+                int(round(float(point[1]) * canvas.shape[0])),
+            )
+            for point in zone["polygon"]
+        ]
+        rgb = str(zone.get("color", "#2563EB")).lstrip("#")
+        try:
+            color = tuple(int(rgb[index : index + 2], 16) for index in (4, 2, 0))
+        except ValueError:
+            color = (235, 99, 37)
+        if points:
+            cv2.polylines(
+                canvas,
+                [np.array(points, dtype=np.int32)],
+                True,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                canvas,
+                str(zone["name"])[:28],
+                points[0],
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
     involved_set = set(involved_track_ids)
     for det in detections:
         x1 = int(round(det.bbox.x1))
@@ -270,6 +336,10 @@ def _to_live_event_info(ev: LiveEvent, api_prefix: str) -> LiveEventInfo:
         severity=ev.severity,
         frame_index=ev.frame_index,
         requires_human_review=bool(payload.get("requires_human_review", False)),
+        alerts_enabled=bool(payload.get("alerts_enabled", True)),
+        voice_alerts_enabled=bool(payload.get("voice_alerts_enabled", True)),
+        zone_id=payload.get("zone_id"),
+        zone_name=payload.get("zone_name"),
         why_flagged=str(payload.get("why_flagged", "")),
         observed_sequence=[str(s) for s in payload.get("observed_sequence", [])],
         snapshot_url=snap_url,
@@ -341,6 +411,7 @@ def process_live_frame(
     frame_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if frame_img is None or frame_img.size == 0:
         raise ValueError("Uploaded payload is not a valid image frame.")
+    _save_live_latest_frame(session_row.id, frame_img)
 
     with _live_registry_lock:
         runtime = _active_live_sessions.get(session_row.id)
@@ -477,7 +548,31 @@ def process_live_frame(
                         )
 
         runtime.total_detections += len(frame_detections)
+        detected_identity_codes = update_live_track_appearances(
+            db,
+            user_id=session_row.user_id,
+            session_id=session_row.id,
+            frame_index=frame_index,
+            timestamp_seconds=ts,
+            frame=frame_img,
+            detections=frame_detections,
+        )
+        for detection in frame_detections:
+            if detection.track_id is not None:
+                detection.identity_code = detected_identity_codes.get(detection.track_id)
+
         active_tracks = _build_track_summaries(runtime)
+        track_identity_codes = get_track_identity_codes(
+            db,
+            source_type="live_session",
+            source_id=session_row.id,
+        )
+        active_tracks = [
+            track.model_copy(
+                update={"identity_code": track_identity_codes.get(track.track_id)}
+            )
+            for track in active_tracks
+        ]
 
         drafts = discover_events_from_data(
             tracks_data=_serialize_tracks_for_events(active_tracks),
@@ -487,6 +582,44 @@ def process_live_frame(
             exit_grace_frames=1,
             memory=runtime.memory,
         )
+        zone_rows = (
+            db.query(Zone)
+            .filter(
+                Zone.live_session_id == session_row.id,
+                Zone.user_id == session_row.user_id,
+            )
+            .order_by(Zone.created_at.asc())
+            .all()
+        )
+        zone_configs = [
+            {
+                "id": zone.id,
+                "name": zone.name,
+                "zone_type": zone.zone_type,
+                "color": zone.color,
+                "polygon": zone.polygon,
+                "settings": zone.settings,
+            }
+            for zone in zone_rows
+        ]
+        drafts.extend(
+            runtime.zone_engine.process_frame(
+                zones=zone_configs,
+                detections=[
+                    {
+                        "track_id": detection.track_id,
+                        "class_name": detection.class_name,
+                        "confidence": detection.confidence,
+                        "bbox": detection.bbox.model_dump(),
+                    }
+                    for detection in frame_detections
+                ],
+                frame_index=frame_index,
+                timestamp_seconds=ts,
+                frame_width=frame_w,
+                frame_height=frame_h,
+            )
+        )
 
         detection_summary_lines = [
             f"{(d.track_code + ' ') if d.track_code else ''}{d.class_name} ({int(round(d.confidence * 100))}%)"
@@ -495,10 +628,12 @@ def process_live_frame(
 
         new_db_events: list[LiveEvent] = []
         for draft in drafts:
-            key = (draft.event_type, tuple(draft.involved_track_ids))
-            if key in runtime.emitted_event_keys:
-                continue
-            runtime.emitted_event_keys.add(key)
+            zone_id = draft.explanation_payload.get("zone_id")
+            if zone_id is None:
+                key = (draft.event_type, tuple(draft.involved_track_ids))
+                if key in runtime.emitted_event_keys:
+                    continue
+                runtime.emitted_event_keys.add(key)
 
             snap_rel = _save_live_event_snapshot(
                 session_id=session_row.id,
@@ -507,6 +642,7 @@ def process_live_frame(
                 detections=frame_detections,
                 involved_track_ids=draft.involved_track_ids,
                 timestamp_seconds=ts,
+                zones=zone_configs if zone_id is not None else None,
             )
             payload = dict(draft.explanation_payload)
             payload.update(
@@ -547,9 +683,32 @@ def process_live_frame(
         session_row.frame_height = frame_h
         session_row.last_frame_at = datetime.now(timezone.utc)
 
+        behavior_snapshot = (
+            db.query(BehaviorSnapshot)
+            .filter(
+                BehaviorSnapshot.live_session_id == session_row.id,
+                BehaviorSnapshot.user_id == session_row.user_id,
+            )
+            .first()
+        )
+        if behavior_snapshot is None:
+            behavior_snapshot = BehaviorSnapshot(
+                user_id=session_row.user_id,
+                live_session_id=session_row.id,
+                baseline_config=dict(DEFAULT_BASELINE_CONFIG),
+                track_history=[],
+                report_payload={},
+            )
+            db.add(behavior_snapshot)
+
+        behavior_snapshot.track_history = _serialize_tracks_for_events(active_tracks)
         if new_db_events:
             db.add_all(new_db_events)
-        db.commit()
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
         for ev in new_db_events:
             db.refresh(ev)
 
@@ -584,6 +743,15 @@ def get_live_session_status_payload(
         runtime = _active_live_sessions.get(session_row.id)
 
     active_tracks = _build_track_summaries(runtime) if runtime is not None else []
+    track_identity_codes = get_track_identity_codes(
+        db,
+        source_type="live_session",
+        source_id=session_row.id,
+    )
+    active_tracks = [
+        track.model_copy(update={"identity_code": track_identity_codes.get(track.track_id)})
+        for track in active_tracks
+    ]
     events = (
         db.query(LiveEvent)
         .filter(LiveEvent.session_id == session_row.id, LiveEvent.user_id == session_row.user_id)
@@ -634,7 +802,11 @@ def stop_live_session(
             runtime.track_map.clear()
             runtime.frame_ts_map.clear()
             runtime.emitted_event_keys.clear()
+            runtime.zone_engine.reset()
             runtime.tracker = None
+    latest_frame = (get_settings().resolved_live_dir / session_row.id / "latest.jpg").resolve()
+    if latest_frame.parent == (get_settings().resolved_live_dir / session_row.id).resolve():
+        latest_frame.unlink(missing_ok=True)
 
     if session_row.status != "stopped":
         session_row.status = "stopped"

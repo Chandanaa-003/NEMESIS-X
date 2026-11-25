@@ -33,6 +33,12 @@ class EventExplanation(BaseModel):
     object_track_id: int | None = None
     association_uncertainty: str | None = None
     anomaly_score: dict[str, Any] | None = None
+    zone_id: str | None = None
+    zone_name: str | None = None
+    zone_type: str | None = None
+    duration_seconds: float | None = None
+    alerts_enabled: bool = True
+    voice_alerts_enabled: bool = True
 
 
 class EventRecordInfo(BaseModel):

@@ -6,9 +6,12 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { DashboardLayout } from './components/dashboard/DashboardLayout'
 import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
+import { BehaviourIntelligencePage } from './pages/BehaviourIntelligencePage'
 import { EventTimelinePage } from './pages/EventTimelinePage'
 import { EvidenceCenterPage } from './pages/EvidenceCenterPage'
 import { HomePage } from './pages/HomePage'
+import { InvestigationWorkspacePage } from './pages/InvestigationWorkspacePage'
+import { IntelligentVideoSearchPage } from './pages/IntelligentVideoSearchPage'
 import { LiveMonitoringPage } from './pages/LiveMonitoringPage'
 import { LoginPage } from './pages/LoginPage'
 import { MonitoringHistoryPage } from './pages/MonitoringHistoryPage'
@@ -16,6 +19,8 @@ import { NewAnalysisPage } from './pages/NewAnalysisPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { SmartZoneManagementPage } from './pages/SmartZoneManagementPage'
+import { UniqueEntityIntelligencePage } from './pages/UniqueEntityIntelligencePage'
 
 function ScrollManager() {
   const { pathname, hash } = useLocation()
@@ -71,6 +76,12 @@ export function App() {
                 <Route path="/dashboard/live" element={<LiveMonitoringPage />} />
                 <Route path="/dashboard/timeline" element={<EventTimelinePage />} />
                 <Route path="/dashboard/evidence" element={<EvidenceCenterPage />} />
+                <Route path="/dashboard/behaviour" element={<BehaviourIntelligencePage />} />
+                <Route path="/dashboard/zones" element={<SmartZoneManagementPage />} />
+                <Route path="/dashboard/investigations" element={<InvestigationWorkspacePage />} />
+                <Route path="/dashboard/investigations/:investigationId" element={<InvestigationWorkspacePage />} />
+                <Route path="/dashboard/search" element={<IntelligentVideoSearchPage />} />
+                <Route path="/dashboard/identities" element={<UniqueEntityIntelligencePage />} />
                 <Route path="/dashboard/history" element={<MonitoringHistoryPage />} />
                 <Route
                   path="/dashboard/analytics"

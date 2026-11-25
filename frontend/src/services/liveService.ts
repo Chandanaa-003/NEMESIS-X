@@ -23,6 +23,7 @@ export interface LiveSessionStartResponse {
 export interface LiveDetectionInfo {
   track_id?: number | null
   track_code?: string | null
+  identity_code?: string | null
   class_id: number
   class_name: string
   confidence: number
@@ -44,6 +45,10 @@ export interface LiveEventInfo {
   severity: string
   frame_index: number
   requires_human_review: boolean
+  alerts_enabled: boolean
+  voice_alerts_enabled: boolean
+  zone_id?: string | null
+  zone_name?: string | null
   why_flagged: string
   observed_sequence: string[]
   snapshot_url: string | null

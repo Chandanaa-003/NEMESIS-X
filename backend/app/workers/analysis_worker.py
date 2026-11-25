@@ -11,6 +11,7 @@ from app.models.detection import Detection
 from app.models.track import Track
 from app.models.video import Video
 from app.services.tracker import track_objects_in_analysis
+from app.services.identity_engine import associate_recorded_track_appearances
 from app.services.video_processor import extract_video_frames
 
 logger = logging.getLogger(__name__)
@@ -125,6 +126,13 @@ def run_video_analysis_job(
             model_name=settings.yolo_model_name,
             tracker_config=settings.tracker_config,
             progress_callback=on_track_progress,
+        )
+
+        associate_recorded_track_appearances(
+            db,
+            user_id=analysis.user_id,
+            analysis_id=analysis.id,
+            profiles=tracking_result.appearance_profiles,
         )
 
         # Persist per-frame detections (with track_id) and temporal track summaries in SQLite

@@ -18,6 +18,10 @@ import {
 } from '../components/analysis/AnalysisConfigForm'
 import { EventDiscoverySection } from '../components/analysis/EventDiscoverySection'
 import { ExtractedFramesGallery } from '../components/analysis/ExtractedFramesGallery'
+import {
+  ObjectOverlayControls,
+} from '../components/analysis/ObjectDetectionOverlay'
+import { useDetectionOverlaySettings } from '../components/analysis/detectionOverlaySettings'
 import { TrackExplorerSection } from '../components/analysis/TrackExplorerSection'
 import { VideoUploadDropzone } from '../components/analysis/VideoUploadDropzone'
 import {
@@ -51,6 +55,8 @@ const SENSITIVITY_CONFIDENCE: Record<AnalysisConfigState['sensitivity'], number>
 }
 
 export function NewAnalysisPage() {
+  const { settings: overlaySettings, updateSettings: updateOverlaySettings } =
+    useDetectionOverlaySettings()
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [config, setConfig] = useState<AnalysisConfigState>({
     profile: 'General',
@@ -529,18 +535,27 @@ export function NewAnalysisPage() {
       {/* Extracted Frames Gallery, Track Explorer & Event Discovery after completion */}
       {analysisResults && analysisResults.status === 'completed' && (
         <>
+          <section className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">
+            <div>
+              <h3 className="text-sm font-bold text-[#111827]">Detection labels</h3>
+              <p className="mt-1 text-xs text-[#64748B]">
+                Display stored detections and backend tracking IDs. Original video files remain unchanged.
+              </p>
+            </div>
+            <ObjectOverlayControls settings={overlaySettings} onChange={updateOverlaySettings} />
+          </section>
           <TrackExplorerSection
             key={analysisResults.analysis_id}
             analysisId={analysisResults.analysis_id}
             videoId={analysisResults.video_id}
-            localVideoFile={selectedFile}
+            overlaySettings={overlaySettings}
           />
           <EventDiscoverySection
             analysisId={analysisResults.analysis_id}
             showTimelineLink
             autoLoadExisting
           />
-          <ExtractedFramesGallery results={analysisResults} />
+          <ExtractedFramesGallery results={analysisResults} overlaySettings={overlaySettings} />
         </>
       )}
     </div>

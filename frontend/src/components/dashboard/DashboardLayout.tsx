@@ -11,6 +11,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/dashboard/timeline': 'Event Timeline',
   '/dashboard/evidence': 'Evidence Center',
   '/dashboard/history': 'Analysis History',
+  '/dashboard/investigations': 'Investigation Workspace',
   '/dashboard/settings': 'Settings',
 }
 
@@ -19,7 +20,10 @@ export function DashboardLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
-  const pageTitle = ROUTE_TITLES[pathname] ?? 'Dashboard'
+  const pageTitle =
+    pathname.startsWith('/dashboard/investigations')
+      ? 'Investigation Workspace'
+      : ROUTE_TITLES[pathname] ?? 'Dashboard'
 
   return (
     <div className="flex min-h-screen bg-[#F5F8FC] text-[#111827]">

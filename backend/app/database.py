@@ -55,14 +55,18 @@ def _apply_safe_sqlite_migrations() -> None:
 def init_db() -> None:
     """Import ORM models and create/migrate database tables safely."""
     import app.models.analysis  # noqa: F401
+    import app.models.behavior  # noqa: F401
     import app.models.detection  # noqa: F401
     import app.models.event  # noqa: F401
     import app.models.evidence  # noqa: F401
+    import app.models.investigation  # noqa: F401
+    import app.models.identity  # noqa: F401
     import app.models.live_session  # noqa: F401
     import app.models.track  # noqa: F401
     import app.models.user  # noqa: F401
     import app.models.user_settings  # noqa: F401
     import app.models.video  # noqa: F401
+    import app.models.zone  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _apply_safe_sqlite_migrations()

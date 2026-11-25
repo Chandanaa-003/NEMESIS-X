@@ -51,6 +51,8 @@ class DetectedObjectInfo(BaseModel):
     """Object detection entry for a single frame, including optional ByteTrack ID."""
 
     track_id: int | None = None
+    track_code: str | None = None
+    identity_code: str | None = None
     class_id: int
     class_name: str
     confidence: float
@@ -98,6 +100,7 @@ class TrackSummaryInfo(BaseModel):
 
     track_id: int
     track_code: str | None = None
+    identity_code: str | None = None
     class_id: int
     class_name: str
     first_seen_frame: int

@@ -17,6 +17,12 @@ export interface VideoRecord {
   created_at: string
 }
 
+export interface VideoPlaybackPreparation {
+  status: 'not_started' | 'converting' | 'ready' | 'failed'
+  progress: number
+  message: string
+}
+
 export async function uploadVideoFile(
   file: File,
   onProgress?: (percent: number) => void,
@@ -47,8 +53,35 @@ export async function listUserVideos(): Promise<VideoRecord[]> {
   return response.data
 }
 
-export async function fetchVideoBlobUrl(videoId: string): Promise<string> {
-  const response = await apiClient.get<Blob>(`/videos/${videoId}/stream`, {
+export async function fetchVideoBlobUrl(
+  videoId: string,
+  onPreparationProgress?: (progress: number, message: string) => void,
+): Promise<string> {
+  const preparationResponse = await apiClient.post<VideoPlaybackPreparation>(
+    `/videos/${videoId}/playback/prepare`,
+    undefined,
+    { timeout: 60000 },
+  )
+  let preparation = preparationResponse.data
+  onPreparationProgress?.(preparation.progress, preparation.message)
+
+  const deadline = Date.now() + 30 * 60 * 1000
+  while (preparation.status === 'converting' || preparation.status === 'not_started') {
+    if (Date.now() >= deadline) {
+      throw new Error('Video conversion is taking too long. Annotated frame navigation remains available.')
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 1000))
+    const statusResponse = await apiClient.get<VideoPlaybackPreparation>(
+      `/videos/${videoId}/playback/status`,
+    )
+    preparation = statusResponse.data
+    onPreparationProgress?.(preparation.progress, preparation.message)
+  }
+  if (preparation.status === 'failed') {
+    throw new Error(preparation.message)
+  }
+
+  const response = await apiClient.get<Blob>(`/videos/${videoId}/playback`, {
     responseType: 'blob',
     timeout: 60000,
   })

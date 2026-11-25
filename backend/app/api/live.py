@@ -188,3 +188,24 @@ def get_live_event_snapshot(
         )
 
     return FileResponse(path=target_path, media_type="image/jpeg")
+
+
+@router.get(
+    "/{session_id}/latest-frame",
+    summary="Fetch the latest small live preview frame for zone editing",
+)
+def get_live_latest_frame(
+    session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Serve the latest live preview frame only to the monitoring session owner."""
+    _get_owned_live_session(session_id, current_user.id, db)
+    live_root = get_settings().resolved_live_dir.resolve()
+    session_dir = (live_root / session_id).resolve()
+    target_path = (session_dir / "latest.jpg").resolve()
+    if session_dir.parent != live_root or target_path.parent != session_dir:
+        raise HTTPException(status_code=404, detail="Live preview frame not found.")
+    if not target_path.is_file():
+        raise HTTPException(status_code=404, detail="Live preview frame not found.")
+    return FileResponse(path=target_path, media_type="image/jpeg")

@@ -44,6 +44,8 @@ export interface BoundingBoxInfo {
 
 export interface DetectedObjectInfo {
   track_id?: number | null
+  track_code?: string | null
+  identity_code?: string | null
   class_id: number
   class_name: string
   confidence: number
@@ -83,6 +85,7 @@ export interface TrackPositionSnapshot {
 export interface TrackSummaryInfo {
   track_id: number
   track_code?: string | null
+  identity_code?: string | null
   class_id: number
   class_name: string
   first_seen_frame: number
@@ -251,6 +254,12 @@ export interface EventExplanation {
   person_track_id?: number | null
   object_track_id?: number | null
   association_uncertainty?: string | null
+  zone_id?: string | null
+  zone_name?: string | null
+  zone_type?: string | null
+  duration_seconds?: number | null
+  alerts_enabled?: boolean
+  voice_alerts_enabled?: boolean
   anomaly_score?: {
     duration_score?: number
     movement_change_score?: number

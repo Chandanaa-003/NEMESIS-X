@@ -30,6 +30,7 @@ class LiveDetectionInfo(BaseModel):
 
     track_id: int | None = None
     track_code: str | None = None
+    identity_code: str | None = None
     class_id: int
     class_name: str
     confidence: float
@@ -53,6 +54,10 @@ class LiveEventInfo(BaseModel):
     severity: str
     frame_index: int
     requires_human_review: bool = False
+    alerts_enabled: bool = True
+    voice_alerts_enabled: bool = True
+    zone_id: str | None = None
+    zone_name: str | None = None
     why_flagged: str = ""
     observed_sequence: list[str] = Field(default_factory=list)
     snapshot_url: str | None = None

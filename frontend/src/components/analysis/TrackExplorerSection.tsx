@@ -19,6 +19,13 @@ import {
 import { motion } from 'motion/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ObjectDetectionOverlay,
+} from './ObjectDetectionOverlay'
+import {
+  DEFAULT_DETECTION_OVERLAY_SETTINGS,
+  type DetectionOverlaySettings,
+} from './detectionOverlaySettings'
+import {
   fetchExtractedFrameBlobUrl,
   getAnalysisTrackDetail,
   getAnalysisTrackFrames,
@@ -52,12 +59,14 @@ function TrackAnnotatedFrameCard({
   trackCode,
   observation,
   isActive,
+  overlaySettings,
   onSelectObservation,
 }: {
   analysisId: string
   trackCode: string
   observation: TrackObservationFrameInfo
   isActive: boolean
+  overlaySettings: DetectionOverlaySettings
   onSelectObservation: (obs: TrackObservationFrameInfo) => void
 }) {
   const [blobState, setBlobState] = useState<{ key: string; url: string | null; failed: boolean }>({
@@ -100,9 +109,6 @@ function TrackAnnotatedFrameCard({
   const fh = observation.frame_height
   const canDrawBox = typeof fw === 'number' && fw > 0 && typeof fh === 'number' && fh > 0
   const sel = observation.selected_detection
-  const selWidth = Math.max(1, sel.bbox.x2 - sel.bbox.x1)
-  const selHeight = Math.max(1, sel.bbox.y2 - sel.bbox.y1)
-
   return (
     <article
       className={`overflow-hidden rounded-2xl border transition-all ${
@@ -133,68 +139,16 @@ function TrackAnnotatedFrameCard({
               className="h-full w-full object-contain bg-slate-950/90"
             />
             {canDrawBox && (
-              <svg
-                viewBox={`0 0 ${fw} ${fh}`}
-                preserveAspectRatio="xMidYMid meet"
-                className="pointer-events-none absolute inset-0 h-full w-full"
-                aria-hidden="true"
-              >
-                {/* Other detections dimmed for visual disambiguation */}
-                {observation.other_detections.map((other, idx) => {
-                  const w = Math.max(1, other.bbox.x2 - other.bbox.x1)
-                  const h = Math.max(1, other.bbox.y2 - other.bbox.y1)
-                  return (
-                    <rect
-                      key={`other-${other.track_id ?? idx}-${idx}`}
-                      x={other.bbox.x1}
-                      y={other.bbox.y1}
-                      width={w}
-                      height={h}
-                      fill="none"
-                      stroke="#94A3B8"
-                      strokeOpacity={0.55}
-                      strokeDasharray="6 4"
-                      strokeWidth={Math.max(1.5, fw * 0.003)}
-                    />
-                  )
-                })}
-
-                {/* Highlighted selected track bounding box */}
-                <rect
-                  x={sel.bbox.x1}
-                  y={sel.bbox.y1}
-                  width={selWidth}
-                  height={selHeight}
-                  fill="#2563EB"
-                  fillOpacity={0.14}
-                  stroke="#FFFFFF"
-                  strokeWidth={Math.max(4, fw * 0.009)}
-                />
-                <rect
-                  x={sel.bbox.x1}
-                  y={sel.bbox.y1}
-                  width={selWidth}
-                  height={selHeight}
-                  fill="none"
-                  stroke="#2563EB"
-                  strokeWidth={Math.max(2.5, fw * 0.0055)}
-                />
-                <circle
-                  cx={observation.center_x}
-                  cy={observation.center_y}
-                  r={Math.max(4, fw * 0.007)}
-                  fill="#7C3AED"
-                  stroke="#FFFFFF"
-                  strokeWidth={Math.max(1.5, fw * 0.0025)}
-                />
-              </svg>
+              <ObjectDetectionOverlay
+                detections={[sel, ...observation.other_detections]}
+                width={fw ?? 0}
+                height={fh ?? 0}
+                settings={overlaySettings}
+              />
             )}
           </>
         )}
 
-        <span className="absolute top-2 left-2 rounded-md bg-[#2563EB] px-2 py-0.5 font-mono text-[10px] font-bold text-white shadow-xs">
-          {trackCode} · {Math.round(sel.confidence * 100)}%
-        </span>
       </button>
 
       <div className="space-y-1.5 bg-white px-3 py-2.5">
@@ -234,13 +188,13 @@ function TrackAnnotatedFrameCard({
 export interface TrackExplorerSectionProps {
   analysisId: string
   videoId?: string
-  localVideoFile?: File | null
+  overlaySettings?: DetectionOverlaySettings
 }
 
 export function TrackExplorerSection({
   analysisId,
   videoId: initialVideoId,
-  localVideoFile = null,
+  overlaySettings = DEFAULT_DETECTION_OVERLAY_SETTINGS,
 }: TrackExplorerSectionProps) {
   const [tracks, setTracks] = useState<TrackSummaryInfo[]>([])
   const [fetchedVideoId, setFetchedVideoId] = useState<string>('')
@@ -261,7 +215,15 @@ export function TrackExplorerSection({
     url: string | null
     error: string | null
   }>({ videoId: '', url: null, error: null })
-  const [videoCodecError, setVideoCodecError] = useState(false)
+  const [videoPlaybackFailure, setVideoPlaybackFailure] = useState<{
+    videoId: string
+    message: string | null
+  }>({ videoId: '', message: null })
+  const [videoPreparation, setVideoPreparation] = useState<{
+    videoId: string
+    message: string
+    progress: number
+  }>({ videoId: '', message: '', progress: 0 })
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const pendingSeekRef = useRef<number | null>(null)
@@ -269,17 +231,10 @@ export function TrackExplorerSection({
 
   const resolvedVideoId = initialVideoId || fetchedVideoId
   const isLoadingTracks = Boolean(analysisId) && loadedTracksForId !== analysisId
-
-  const localVideoUrl = useMemo(
-    () => (localVideoFile ? URL.createObjectURL(localVideoFile) : null),
-    [localVideoFile],
-  )
-
-  useEffect(() => {
-    return () => {
-      if (localVideoUrl) URL.revokeObjectURL(localVideoUrl)
-    }
-  }, [localVideoUrl])
+  const videoPlaybackError =
+    videoPlaybackFailure.videoId === resolvedVideoId ? videoPlaybackFailure.message : null
+  const currentVideoPreparation =
+    videoPreparation.videoId === resolvedVideoId ? videoPreparation : null
 
   // Load saved tracks list for this analysis
   useEffect(() => {
@@ -309,16 +264,20 @@ export function TrackExplorerSection({
     }
   }, [analysisId])
 
-  // Resolve backend video stream URL when no local uploaded File is attached
+  // Use the backend's inspected or converted playback source for saved analyses.
   useEffect(() => {
-    if (localVideoFile || !resolvedVideoId) {
+    if (!resolvedVideoId) {
       return
     }
 
     let active = true
     let createdUrl: string | null = null
 
-    fetchVideoBlobUrl(resolvedVideoId)
+    fetchVideoBlobUrl(resolvedVideoId, (progress, message) => {
+      if (active) {
+        setVideoPreparation({ videoId: resolvedVideoId, progress, message })
+      }
+    })
       .then((url) => {
         if (!active) {
           URL.revokeObjectURL(url)
@@ -332,7 +291,17 @@ export function TrackExplorerSection({
           setStreamedVideoState({
             videoId: resolvedVideoId,
             url: null,
-            error: getAuthErrorMessage(error, 'Unable to load source video stream.'),
+            error:
+              error instanceof Error
+                ? error.message
+                : getAuthErrorMessage(error, 'Unable to prepare source video playback.'),
+          })
+          setVideoPlaybackFailure({
+            videoId: resolvedVideoId,
+            message:
+              error instanceof Error
+                ? error.message
+                : getAuthErrorMessage(error, 'Unable to prepare source video playback.'),
           })
         }
       })
@@ -341,18 +310,14 @@ export function TrackExplorerSection({
       active = false
       if (createdUrl) URL.revokeObjectURL(createdUrl)
     }
-  }, [localVideoFile, resolvedVideoId])
+  }, [resolvedVideoId])
 
   const videoBlobUrl =
-    localVideoUrl ||
-    (streamedVideoState.videoId === resolvedVideoId ? streamedVideoState.url : null)
-  const videoLoadError = localVideoUrl
-    ? null
-    : streamedVideoState.videoId === resolvedVideoId
-      ? streamedVideoState.error
-      : null
+    streamedVideoState.videoId === resolvedVideoId ? streamedVideoState.url : null
+  const videoLoadError =
+    streamedVideoState.videoId === resolvedVideoId ? streamedVideoState.error : null
   const isLoadingVideo =
-    !localVideoFile && Boolean(resolvedVideoId) && streamedVideoState.videoId !== resolvedVideoId
+    Boolean(resolvedVideoId) && streamedVideoState.videoId !== resolvedVideoId
 
   const seekVideoTo = useCallback(
     (timestampSeconds: number) => {
@@ -782,16 +747,16 @@ export function TrackExplorerSection({
                         </div>
 
                         {isLoadingVideo ? (
-                          <div className="flex aspect-video w-full items-center justify-center rounded-xl border border-slate-200 bg-[#F5F8FC] text-xs font-medium text-[#64748B]">
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin text-[#2563EB]" />
-                            <span>Loading uploaded video stream...</span>
+                          <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 bg-[#F5F8FC] px-6 text-xs font-medium text-[#64748B]">
+                            <span className="inline-flex items-center gap-2"><Loader2 className="h-4 w-4 animate-spin text-[#2563EB]" />{currentVideoPreparation?.message || 'Preparing video playback...'}</span>
+                            <progress value={currentVideoPreparation?.progress ?? 0} max={100} className="h-1.5 w-full max-w-sm accent-blue-600" />
+                            {currentVideoPreparation?.message.toLowerCase().includes('convert') && <span>{currentVideoPreparation.progress}%</span>}
                           </div>
-                        ) : videoLoadError || videoCodecError || !videoBlobUrl ? (
+                        ) : videoLoadError || videoPlaybackError || !videoBlobUrl ? (
                           <div className="flex aspect-video w-full flex-col items-center justify-center rounded-xl border border-slate-200 bg-[#F5F8FC] px-4 text-center">
                             <Film className="h-7 w-7 text-[#2563EB]" />
                             <p className="mt-2 text-xs font-semibold text-[#111827]">
-                              {videoLoadError ||
-                                'Browser video playback unavailable for this codec'}
+                              {videoLoadError || videoPlaybackError || 'Video playback could not be prepared.'}
                             </p>
                             <p className="mt-1 text-[11px] text-[#64748B]">
                               You can still inspect every annotated frame and coordinate delta below.
@@ -812,55 +777,31 @@ export function TrackExplorerSection({
                               controls
                               playsInline
                               onLoadedMetadata={handleVideoLoadedMetadata}
+                              onLoadedData={() => setVideoPlaybackFailure({ videoId: resolvedVideoId, message: null })}
                               onTimeUpdate={handleVideoTimeUpdate}
                               onSeeked={handleVideoTimeUpdate}
-                              onError={() => setVideoCodecError(true)}
+                              onError={(event) => {
+                                const code = event.currentTarget.error?.code
+                                setVideoPlaybackFailure({
+                                  videoId: resolvedVideoId,
+                                  message: code === 4
+                                    ? 'The browser does not support this prepared video source.'
+                                    : `Video playback failed${code ? ` (media error ${code})` : ''}.`,
+                                })
+                              }}
                               className="h-full w-full object-contain"
                             />
 
                             {canRenderVideoOverlay && activeObservation && overlayFrameW && overlayFrameH && (
-                              <svg
-                                viewBox={`0 0 ${overlayFrameW} ${overlayFrameH}`}
-                                preserveAspectRatio="xMidYMid meet"
-                                className="pointer-events-none absolute inset-0 h-full w-full"
-                                aria-hidden="true"
-                              >
-                                <rect
-                                  x={activeObservation.selected_detection.bbox.x1}
-                                  y={activeObservation.selected_detection.bbox.y1}
-                                  width={Math.max(
-                                    1,
-                                    activeObservation.selected_detection.bbox.x2 -
-                                      activeObservation.selected_detection.bbox.x1,
-                                  )}
-                                  height={Math.max(
-                                    1,
-                                    activeObservation.selected_detection.bbox.y2 -
-                                      activeObservation.selected_detection.bbox.y1,
-                                  )}
-                                  fill="#2563EB"
-                                  fillOpacity={0.14}
-                                  stroke="#FFFFFF"
-                                  strokeWidth={Math.max(4, overlayFrameW * 0.008)}
-                                />
-                                <rect
-                                  x={activeObservation.selected_detection.bbox.x1}
-                                  y={activeObservation.selected_detection.bbox.y1}
-                                  width={Math.max(
-                                    1,
-                                    activeObservation.selected_detection.bbox.x2 -
-                                      activeObservation.selected_detection.bbox.x1,
-                                  )}
-                                  height={Math.max(
-                                    1,
-                                    activeObservation.selected_detection.bbox.y2 -
-                                      activeObservation.selected_detection.bbox.y1,
-                                  )}
-                                  fill="none"
-                                  stroke="#2563EB"
-                                  strokeWidth={Math.max(2.5, overlayFrameW * 0.005)}
-                                />
-                              </svg>
+                              <ObjectDetectionOverlay
+                                detections={[
+                                  activeObservation.selected_detection,
+                                  ...activeObservation.other_detections,
+                                ]}
+                                width={overlayFrameW}
+                                height={overlayFrameH}
+                                settings={overlaySettings}
+                              />
                             )}
                           </div>
                         )}
@@ -1072,6 +1013,7 @@ export function TrackExplorerSection({
                               trackCode={trackDetail.track_code}
                               observation={obs}
                               isActive={idx === activeObsIndex}
+                              overlaySettings={overlaySettings}
                               onSelectObservation={handleSelectObservationFrame}
                             />
                           ))}

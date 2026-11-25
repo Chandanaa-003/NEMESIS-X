@@ -20,6 +20,11 @@ import { motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { VoiceAlertCenter } from '../components/analysis/VoiceAlertCenter'
+import {
+  ObjectDetectionOverlay,
+  ObjectOverlayControls,
+} from '../components/analysis/ObjectDetectionOverlay'
+import { useDetectionOverlaySettings } from '../components/analysis/detectionOverlaySettings'
 import type { TrackSummaryInfo } from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
 import {
@@ -35,6 +40,7 @@ import {
   type LiveDetectionInfo,
   type LiveEventInfo,
 } from '../services/liveService'
+import { listZones, type ZoneRecord } from '../services/zoneService'
 import { fetchUserVoiceSettings } from '../services/settingsService'
 
 type CameraPermissionState =
@@ -139,6 +145,8 @@ function LiveSnapshotThumbnail({ sessionId, eventId, title }: { sessionId: strin
 }
 
 export function LiveMonitoringPage() {
+  const { settings: overlaySettings, updateSettings: updateOverlaySettings } =
+    useDetectionOverlaySettings()
   // Configurable capture & inference parameters (CPU + bandwidth friendly)
   const [captureMaxWidth, setCaptureMaxWidth] = useState<number>(640)
   const [jpegQuality, setJpegQuality] = useState<number>(0.75)
@@ -162,8 +170,10 @@ export function LiveMonitoringPage() {
   const [latestFrameIndex, setLatestFrameIndex] = useState<number>(-1)
   const [overlaySize, setOverlaySize] = useState<{ width: number; height: number } | null>(null)
   const [currentDetections, setCurrentDetections] = useState<LiveDetectionInfo[]>([])
+  const [processedFrameUrl, setProcessedFrameUrl] = useState<string | null>(null)
   const [activeTracks, setActiveTracks] = useState<TrackSummaryInfo[]>([])
   const [liveEvents, setLiveEvents] = useState<LiveEventInfo[]>([])
+  const [liveZones, setLiveZones] = useState<ZoneRecord[]>([])
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -175,6 +185,13 @@ export function LiveMonitoringPage() {
   const isMonitoringRef = useRef<boolean>(false)
   const isSendingFrameRef = useRef<boolean>(false)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const processedFrameUrlRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (processedFrameUrlRef.current) URL.revokeObjectURL(processedFrameUrlRef.current)
+    }
+  }, [])
 
   // Sync user's saved Kannada/English voice preferences for live alerts
   useEffect(() => {
@@ -192,6 +209,27 @@ export function LiveMonitoringPage() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (!sessionId) return
+    let active = true
+    const refreshZones = async () => {
+      try {
+        const nextZones = await listZones({ liveSessionId: sessionId })
+        if (active) setLiveZones(nextZones)
+      } catch (error) {
+        if (active) {
+          setErrorBanner(getAuthErrorMessage(error, 'Could not refresh live zone configuration.'))
+        }
+      }
+    }
+    void refreshZones()
+    const timerId = window.setInterval(() => void refreshZones(), 3000)
+    return () => {
+      active = false
+      window.clearInterval(timerId)
+    }
+  }, [sessionId])
 
   const releaseLocalCamera = useCallback(() => {
     if (captureTimerRef.current !== null) {
@@ -279,6 +317,10 @@ export function LiveMonitoringPage() {
       setCurrentFrameTimestamp(res.timestamp_seconds)
       setLatestFrameIndex(res.frame_index)
       setOverlaySize({ width: res.frame_width, height: res.frame_height })
+      const nextFrameUrl = URL.createObjectURL(blob)
+      if (processedFrameUrlRef.current) URL.revokeObjectURL(processedFrameUrlRef.current)
+      processedFrameUrlRef.current = nextFrameUrl
+      setProcessedFrameUrl(nextFrameUrl)
       setCurrentDetections(res.detections)
       setActiveTracks(res.active_tracks)
       setFrameStatusText(`Frame #${res.frame_index + 1} processed in ${res.processing_ms} ms`)
@@ -296,6 +338,9 @@ export function LiveMonitoringPage() {
             timestampSeconds: evt.timestamp_seconds,
             severity: (evt.severity as 'low' | 'medium' | 'high') || 'low',
             requiresHumanReview: evt.requires_human_review,
+            zoneName: evt.zone_name ?? undefined,
+            alertsEnabled: evt.alerts_enabled,
+            voiceAlertsEnabled: evt.voice_alerts_enabled,
           })
         }
       }
@@ -388,6 +433,7 @@ export function LiveMonitoringPage() {
       })
 
       sessionIdRef.current = started.session_id
+      setLiveZones([])
       setSessionId(started.session_id)
       startedAtMsRef.current = Date.now()
 
@@ -397,6 +443,9 @@ export function LiveMonitoringPage() {
       setUniqueTracksCount(0)
       setEventsDiscoveredCount(0)
       setCurrentDetections([])
+      if (processedFrameUrlRef.current) URL.revokeObjectURL(processedFrameUrlRef.current)
+      processedFrameUrlRef.current = null
+      setProcessedFrameUrl(null)
       setActiveTracks([])
       setLiveEvents([])
       setCurrentFrameTimestamp(0)
@@ -624,13 +673,26 @@ export function LiveMonitoringPage() {
             </span>
           </div>
 
+          <ObjectOverlayControls
+            settings={overlaySettings}
+            onChange={updateOverlaySettings}
+            compact
+          />
+
           <div className="relative aspect-video w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-950">
+            {isMonitoringActive && processedFrameUrl && (
+              <img
+                src={processedFrameUrl}
+                alt={`Analyzed live frame at ${currentFrameTimestamp?.toFixed(1) ?? 'unknown'} seconds`}
+                className="absolute inset-0 h-full w-full object-contain"
+              />
+            )}
             <video
               ref={videoRef}
               autoPlay
               muted
               playsInline
-              className={`h-full w-full object-contain ${isMonitoringActive ? 'block' : 'hidden'}`}
+              className={`h-full w-full object-contain ${isMonitoringActive && !processedFrameUrl ? 'block' : 'hidden'}`}
             />
 
             {!isMonitoringActive && (
@@ -654,51 +716,48 @@ export function LiveMonitoringPage() {
               </div>
             )}
 
-            {/* Real-time SVG Detection & Tracking Overlay */}
-            {isMonitoringActive && overlaySize && overlaySize.width > 0 && overlaySize.height > 0 && (
+            {isMonitoringActive && processedFrameUrl && overlaySize && overlaySize.width > 0 && overlaySize.height > 0 && (
+              <ObjectDetectionOverlay
+                detections={currentDetections}
+                width={overlaySize.width}
+                height={overlaySize.height}
+                settings={overlaySettings}
+              />
+            )}
+
+            {/* Session zone outlines are independent of detection label visibility. */}
+            {isMonitoringActive && processedFrameUrl && overlaySize && overlaySize.width > 0 && overlaySize.height > 0 && (
               <svg
                 viewBox={`0 0 ${overlaySize.width} ${overlaySize.height}`}
                 preserveAspectRatio="xMidYMid meet"
                 className="pointer-events-none absolute inset-0 h-full w-full"
                 aria-hidden="true"
               >
-                {currentDetections.map((det, idx) => {
-                  const w = Math.max(1, det.bbox.x2 - det.bbox.x1)
-                  const h = Math.max(1, det.bbox.y2 - det.bbox.y1)
-                  const strokeColor =
-                    det.track_id != null
-                      ? det.class_name === 'person'
-                        ? '#2563EB'
-                        : '#7C3AED'
-                      : '#64748B'
-                  const label = `${det.track_code ? `${det.track_code} · ` : ''}${det.class_name} ${Math.round(det.confidence * 100)}%`
-                  const labelY = Math.max(16, det.bbox.y1 - 6)
-
-                  return (
-                    <g key={`live-box-${det.track_id ?? 'raw'}-${idx}`}>
-                      <rect
-                        x={det.bbox.x1}
-                        y={det.bbox.y1}
-                        width={w}
-                        height={h}
-                        fill={strokeColor}
-                        fillOpacity={0.1}
-                        stroke={strokeColor}
-                        strokeWidth={Math.max(2, overlaySize.width * 0.0045)}
+                  {liveZones.map((zone) => (
+                    <g key={`live-zone-${zone.id}`}>
+                      <polygon
+                        points={zone.polygon
+                          .map(([x, y]) => `${x * overlaySize.width},${y * overlaySize.height}`)
+                          .join(' ')}
+                        fill={zone.color}
+                        fillOpacity={0.14}
+                        stroke={zone.color}
+                        strokeWidth={Math.max(2, overlaySize.width * 0.003)}
                       />
                       <text
-                        x={det.bbox.x1 + 2}
-                        y={labelY}
-                        fill={strokeColor}
-                        fontSize={Math.max(12, overlaySize.width * 0.022)}
+                        x={zone.polygon[0][0] * overlaySize.width}
+                        y={zone.polygon[0][1] * overlaySize.height}
+                        fill={zone.color}
+                        fontSize={Math.max(12, overlaySize.width * 0.02)}
                         fontWeight="bold"
-                        fontFamily="monospace"
+                        stroke="white"
+                        strokeWidth={Math.max(2, overlaySize.width * 0.004)}
+                        paintOrder="stroke"
                       >
-                        {label}
+                        {zone.name}
                       </text>
                     </g>
-                  )
-                })}
+                  ))}
               </svg>
             )}
 
@@ -708,6 +767,21 @@ export function LiveMonitoringPage() {
               </div>
             )}
           </div>
+          {sessionId && (
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+              <p className="text-[11px] text-blue-800">
+                {liveZones.length} live zone(s) configured for this session.
+              </p>
+              <Link
+                to={`/dashboard/zones?liveSessionId=${sessionId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="shrink-0 text-[11px] font-semibold text-[#2563EB] hover:underline"
+              >
+                Manage zones in new tab
+              </Link>
+            </div>
+          )}
 
           <canvas ref={canvasRef} className="hidden" aria-hidden="true" />
 

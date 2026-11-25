@@ -2,11 +2,12 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 from typing import Any
 import uuid
 
-from app.services.anomaly_engine import analyze_anomalies
+from app.services.anomaly_engine import analyze_anomalies, compute_explainable_anomaly_score
 from app.services.interaction_engine import (
     InteractionConfig,
     SessionTemporalMemory,
@@ -293,8 +294,143 @@ def discover_events_from_data(
                             f">= {cfg.stationary_min_seconds:.1f}s threshold)."
                         ),
                         requires_human_review=False,
+                        object_track_id=prof.track_id,
+                        anomaly_score=compute_explainable_anomaly_score(
+                            duration_factor=min(
+                                1.0,
+                                prof.duration_seconds / max(cfg.stationary_min_seconds * 2.0, 0.1),
+                            ),
+                            association_conf=prof.avg_confidence,
+                            explanation=(
+                                "Weighted rule score: duration 15%, interaction sequence 25%, "
+                                "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                                "This rule contributes duration evidence only."
+                            ),
+                        ).to_dict(),
                     )
                 )
+
+    # Rule: prolonged stationary interval followed by sudden movement
+    for prof in interactions.track_profiles.values():
+        if prof.class_name != "person":
+            continue
+        points = sorted(prof.points_by_frame.values(), key=lambda point: point.timestamp_seconds)
+        stationary_start = 0
+        pending_stationary: tuple[int, int, float] | None = None
+        for burst_index in range(1, len(points)):
+            burst = points[burst_index]
+            if pending_stationary is not None:
+                pending_end = points[pending_stationary[1]]
+                if burst.timestamp_seconds - pending_end.timestamp_seconds > cfg.burst_window_seconds:
+                    pending_stationary = None
+
+            anchor = points[stationary_start]
+            displacement = math.hypot(burst.norm_x - anchor.norm_x, burst.norm_y - anchor.norm_y)
+            if displacement > cfg.stationary_displacement_norm:
+                stationary_end = burst_index - 1
+                stationary_duration = (
+                    points[stationary_end].timestamp_seconds - anchor.timestamp_seconds
+                )
+                if stationary_duration >= cfg.prolonged_person_stationary_seconds:
+                    pending_stationary = (
+                        stationary_start,
+                        stationary_end,
+                        stationary_duration,
+                    )
+                stationary_start = burst_index
+
+            has_sudden_movement = (
+                burst.speed >= cfg.running_speed_threshold
+                or burst.accel >= cfg.sudden_accel_threshold
+            )
+            if (
+                pending_stationary is None
+                or burst_index <= pending_stationary[1]
+                or not has_sudden_movement
+            ):
+                continue
+
+            stationary_start, stationary_end, stationary_duration = pending_stationary
+            anchor = points[stationary_start]
+            prior_moving = next(
+                (point for point in reversed(points[:stationary_start]) if point.speed > 0.03),
+                None,
+            )
+            direction_changed = False
+            if prior_moving is not None and burst.speed > 0.03:
+                prior_mag = math.hypot(prior_moving.vx, prior_moving.vy)
+                burst_mag = math.hypot(burst.vx, burst.vy)
+                if prior_mag > 0 and burst_mag > 0:
+                    cosine = (
+                        prior_moving.vx * burst.vx + prior_moving.vy * burst.vy
+                    ) / (prior_mag * burst_mag)
+                    direction_changed = cosine <= cfg.direction_reversal_cos_threshold
+
+            actions = [
+                (
+                    f"Person P{prof.track_id:03d} stayed within "
+                    f"{cfg.stationary_displacement_norm:.3f} normalized image units for "
+                    f"{stationary_duration:.1f}s."
+                ),
+                (
+                    f"At {burst.timestamp_seconds:.1f}s, movement reached "
+                    f"{burst.speed:.3f} normalized image units/s with acceleration "
+                    f"{burst.accel:.3f} normalized image units/s²."
+                ),
+            ]
+            if direction_changed:
+                actions.append("The post-stationary direction opposed the prior moving direction.")
+
+            score = compute_explainable_anomaly_score(
+                duration_factor=min(
+                    1.0,
+                    stationary_duration / max(cfg.prolonged_person_stationary_seconds * 2.0, 0.1),
+                ),
+                movement_factor=min(
+                    1.0,
+                    max(
+                        burst.speed / max(cfg.running_speed_threshold, 0.01),
+                        burst.accel / max(cfg.sudden_accel_threshold, 0.01),
+                    ),
+                ),
+                association_conf=prof.avg_confidence,
+                explanation=(
+                    "Weighted rule score: duration 15%, interaction sequence 25%, "
+                    "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                    "This rule contributes stationary-duration and post-stationary motion evidence."
+                ),
+            )
+            discovered.append(
+                build_event(
+                    event_type="stationary_then_sudden_movement",
+                    category="people_movement",
+                    title=f"Stationary period followed by sudden movement (P{prof.track_id:03d})",
+                    description=(
+                        f"Person P{prof.track_id:03d} remained within a small image-plane area, then "
+                        f"accelerated or moved rapidly at {burst.timestamp_seconds:.1f}s."
+                    ),
+                    start_ts=anchor.timestamp_seconds,
+                    end_ts=burst.timestamp_seconds,
+                    track_ids=[prof.track_id],
+                    confidence=prof.avg_confidence * 0.88,
+                    severity="medium",
+                    frame_ids=[
+                        anchor.frame_index,
+                        points[stationary_end].frame_index,
+                        burst.frame_index,
+                    ],
+                    observed_sequence=actions,
+                    why_flagged=(
+                        "A configured prolonged-stationary interval was followed by rapid image-plane "
+                        "movement or a sudden acceleration. This is a movement pattern, not evidence "
+                        "of intent."
+                    ),
+                    requires_human_review=True,
+                    person_track_id=prof.track_id,
+                    anomaly_score=score.to_dict(),
+                )
+            )
+            break
 
     # Rules 3, 4, 5, 8: Person-object proximity & interaction rules
     for inter in interactions.person_object_interactions:
@@ -439,6 +575,21 @@ def discover_events_from_data(
                         "after a nearby person track separated or left the area. Requires human review."
                     ),
                     requires_human_review=True,
+                    person_track_id=inter.person_track_id,
+                    object_track_id=inter.object_track_id,
+                    anomaly_score=compute_explainable_anomaly_score(
+                        duration_factor=min(
+                            1.0,
+                            remaining_after_depart / max(cfg.unattended_min_seconds * 2.0, 0.1),
+                        ),
+                        interaction_factor=0.6,
+                        association_conf=pair_conf,
+                        explanation=(
+                            "Weighted rule score: duration 15%, interaction sequence 25%, "
+                            "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                            "This rule contributes duration and interaction evidence only."
+                        ),
+                    ).to_dict(),
                 )
             )
 
@@ -476,6 +627,18 @@ def discover_events_from_data(
                         f"distinct visits >= {cfg.repeated_visit_min_cycles})."
                     ),
                     requires_human_review=True,
+                    person_track_id=inter.person_track_id,
+                    object_track_id=inter.object_track_id,
+                    anomaly_score=compute_explainable_anomaly_score(
+                        interaction_factor=0.5,
+                        repeated_factor=min(1.0, len(inter.proximity_visit_windows) / 4.0),
+                        association_conf=pair_conf,
+                        explanation=(
+                            "Weighted rule score: duration 15%, interaction sequence 25%, "
+                            "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                            "Repeated proximity contributes interaction and repeat-count evidence."
+                        ),
+                    ).to_dict(),
                 )
             )
 
@@ -566,6 +729,16 @@ def discover_events_from_data(
                     person_track_id=inter.person_track_id,
                     object_track_id=inter.object_track_id,
                     association_uncertainty=uncertainty,
+                    anomaly_score=compute_explainable_anomaly_score(
+                        movement_factor=0.4,
+                        interaction_factor=0.8,
+                        association_conf=pair_conf,
+                        explanation=(
+                            "Weighted rule score: duration 15%, interaction sequence 25%, "
+                            "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                            "Possible pickup contributes co-movement and proximity evidence."
+                        ),
+                    ).to_dict(),
                 )
             )
 
@@ -629,6 +802,16 @@ def discover_events_from_data(
                 person_track_id=ma.primary_person_id,
                 object_track_id=ma.object_track_id,
                 association_uncertainty=ma.association_uncertainty,
+                anomaly_score=compute_explainable_anomaly_score(
+                    interaction_factor=0.5,
+                    repeated_factor=min(1.0, len(ma.candidate_person_ids) / 4.0),
+                    association_conf=0.8 if ma.association_uncertainty != "high" else 0.6,
+                    explanation=(
+                        "Weighted rule score: duration 15%, interaction sequence 25%, "
+                        "movement change 25%, repeated behavior 15%, configured zone 20%. "
+                        "This rule contributes shared-object interaction and candidate-count evidence."
+                    ),
+                ).to_dict(),
             )
         )
 

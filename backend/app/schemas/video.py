@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 VideoStatus = Literal["uploaded", "queued", "processing", "completed", "failed"]
+PlaybackPreparationStatus = Literal["not_started", "converting", "ready", "failed"]
 
 
 class VideoResponse(BaseModel):
@@ -23,3 +24,9 @@ class VideoResponse(BaseModel):
     height: int | None = None
     status: VideoStatus
     created_at: datetime
+
+
+class VideoPlaybackPreparationResponse(BaseModel):
+    status: PlaybackPreparationStatus
+    progress: int
+    message: str

@@ -1,6 +1,8 @@
 import { Clock, Film, GitBranch, ImageOff, Layers, ScanSearch } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
+import { ObjectDetectionOverlay } from './ObjectDetectionOverlay'
+import type { DetectionOverlaySettings } from './detectionOverlaySettings'
 import {
   fetchExtractedFrameBlobUrl,
   type AnalysisResultsResponse,
@@ -20,6 +22,7 @@ function AuthenticatedFrameThumbnail({
   frameWidth,
   frameHeight,
   detections,
+  overlaySettings,
 }: {
   analysisId: string
   filename: string
@@ -27,6 +30,7 @@ function AuthenticatedFrameThumbnail({
   frameWidth?: number | null
   frameHeight?: number | null
   detections: DetectedObjectInfo[]
+  overlaySettings: DetectionOverlaySettings
 }) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
@@ -68,7 +72,7 @@ function AuthenticatedFrameThumbnail({
     return <div className="aspect-video w-full animate-pulse bg-slate-100" />
   }
 
-  const canOverlayBoxes =
+  const canOverlay =
     detections.length > 0 &&
     typeof frameWidth === 'number' &&
     frameWidth > 0 &&
@@ -78,32 +82,13 @@ function AuthenticatedFrameThumbnail({
   return (
     <div className="relative aspect-video w-full overflow-hidden bg-slate-100">
       <img src={blobUrl} alt={alt} loading="lazy" className="h-full w-full object-contain" />
-      {canOverlayBoxes && (
-        <svg
-          viewBox={`0 0 ${frameWidth} ${frameHeight}`}
-          preserveAspectRatio="xMidYMid meet"
-          className="pointer-events-none absolute inset-0 h-full w-full"
-          aria-hidden="true"
-        >
-          {detections.map((det, idx) => {
-            const width = Math.max(1, det.bbox.x2 - det.bbox.x1)
-            const height = Math.max(1, det.bbox.y2 - det.bbox.y1)
-            const strokeColor = det.class_name === 'person' ? '#2563EB' : '#7C3AED'
-            return (
-              <g key={`${det.class_name}-${det.track_id ?? 'na'}-${idx}`}>
-                <rect
-                  x={det.bbox.x1}
-                  y={det.bbox.y1}
-                  width={width}
-                  height={height}
-                  fill="none"
-                  stroke={strokeColor}
-                  strokeWidth={Math.max(2, frameWidth * 0.005)}
-                />
-              </g>
-            )
-          })}
-        </svg>
+      {canOverlay && (
+        <ObjectDetectionOverlay
+          detections={detections}
+          width={frameWidth ?? 0}
+          height={frameHeight ?? 0}
+          settings={overlaySettings}
+        />
       )}
     </div>
   )
@@ -111,9 +96,10 @@ function AuthenticatedFrameThumbnail({
 
 interface ExtractedFramesGalleryProps {
   results: AnalysisResultsResponse
+  overlaySettings: DetectionOverlaySettings
 }
 
-export function ExtractedFramesGallery({ results }: ExtractedFramesGalleryProps) {
+export function ExtractedFramesGallery({ results, overlaySettings }: ExtractedFramesGalleryProps) {
   const dims = results.summary.original_dimensions
   const duration = results.summary.duration_seconds
   const detSummary = results.detections_summary
@@ -261,6 +247,7 @@ export function ExtractedFramesGallery({ results }: ExtractedFramesGalleryProps)
                     frameWidth={frame.frame_width}
                     frameHeight={frame.frame_height}
                     detections={frame.detections}
+                    overlaySettings={overlaySettings}
                     alt={`Frame ${frame.frame_index + 1} at ${formatTimestamp(frame.timestamp_seconds)}`}
                   />
 

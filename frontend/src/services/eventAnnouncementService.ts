@@ -34,6 +34,9 @@ export interface LiveMonitoringEventInput {
   timestampSeconds: number
   severity: 'low' | 'medium' | 'high'
   requiresHumanReview?: boolean
+  zoneName?: string
+  alertsEnabled?: boolean
+  voiceAlertsEnabled?: boolean
 }
 
 const PRIORITY_RANK: Record<AlertPriority, number> = {
@@ -138,9 +141,11 @@ function formatSpokenTimestampKn(seconds: number): string {
 export function buildEventAnnouncementTexts(params: {
   eventType: string
   timestampSeconds: number
+  zoneName?: string
 }): { englishText: string; kannadaText: string } {
   const enTs = formatSpokenTimestampEn(params.timestampSeconds)
   const knTs = formatSpokenTimestampKn(params.timestampSeconds)
+  const zoneName = params.zoneName || 'the configured zone'
 
   switch (params.eventType) {
     case 'person_entering':
@@ -208,10 +213,55 @@ export function buildEventAnnouncementTexts(params: {
         englishText: `Attention. Unusual movement pattern detected at ${enTs}. Please review the timeline.`,
         kannadaText: `ಗಮನಿಸಿ. ${knTs} ಅಸಾಮಾನ್ಯ ಚಲನೆ ಪತ್ತೆಯಾಗಿದೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
       }
+    case 'stationary_then_sudden_movement':
+      return {
+        englishText: `Notice. A prolonged stationary period was followed by sudden movement at ${enTs}. Please review the timeline.`,
+        kannadaText: `ಸೂಚನೆ. ${knTs} ದೀರ್ಘಕಾಲ ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ ಇದ್ದ ನಂತರ ದಿಢೀರ್ ಚಲನೆ ಕಂಡುಬಂದಿದೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
+      }
     case 'restricted_zone_entry':
       return {
-        englishText: `High alert. Restricted zone entry detected at ${enTs}. Please review immediately.`,
-        kannadaText: `ತುರ್ತು ಎಚ್ಚರಿಕೆ. ${knTs} ನಿರ್ಬಂಧಿತ ಪ್ರದೇಶಕ್ಕೆ ಪ್ರವೇಶ ಪತ್ತೆಯಾಗಿದೆ. ದಯವಿಟ್ಟು ತಕ್ಷಣ ಪರಿಶೀಲಿಸಿ.`,
+        englishText: `High alert. A person entered restricted zone ${zoneName} at ${enTs}. Please review immediately.`,
+        kannadaText: `ತುರ್ತು ಎಚ್ಚರಿಕೆ. ${knTs} ವ್ಯಕ್ತಿಯೊಬ್ಬರು ನಿರ್ಬಂಧಿತ ಪ್ರದೇಶ ${zoneName} ಪ್ರವೇಶಿಸಿದ್ದಾರೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
+      }
+    case 'person_zone_entry':
+      return {
+        englishText: `A person entered zone ${zoneName} at ${enTs}.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ${zoneName} ಪ್ರದೇಶವನ್ನು ಪ್ರವೇಶಿಸಿದ್ದಾರೆ.`,
+      }
+    case 'person_zone_exit':
+      return {
+        englishText: `A person exited zone ${zoneName} at ${enTs}.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ${zoneName} ಪ್ರದೇಶದಿಂದ ಹೊರಹೋಗಿದ್ದಾರೆ.`,
+      }
+    case 'object_zone_entry':
+      return {
+        englishText: `A tracked object entered zone ${zoneName} at ${enTs}.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಗುರುತಿಸಿದ ವಸ್ತು ${zoneName} ಪ್ರದೇಶವನ್ನು ಪ್ರವೇಶಿಸಿದೆ.`,
+      }
+    case 'object_zone_exit':
+      return {
+        englishText: `A tracked object exited zone ${zoneName} at ${enTs}.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಗುರುತಿಸಿದ ವಸ್ತು ${zoneName} ಪ್ರದೇಶದಿಂದ ಹೊರಹೋಗಿದೆ.`,
+      }
+    case 'zone_loitering':
+      return {
+        englishText: `A person remained in zone ${zoneName} beyond its configured time threshold at ${enTs}. This does not imply intent.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ${zoneName} ಪ್ರದೇಶದಲ್ಲಿ ನಿಗದಿತ ಸಮಯಕ್ಕಿಂತ ಹೆಚ್ಚು ಇದ್ದಾರೆ. ಇದು ಉದ್ದೇಶವನ್ನು ಸೂಚಿಸುವುದಿಲ್ಲ.`,
+      }
+    case 'multiple_people_restricted_zone':
+      return {
+        englishText: `Multiple people entered restricted zone ${zoneName} at ${enTs}.`,
+        kannadaText: `ಎಚ್ಚರಿಕೆ. ${knTs} ಹಲವರು ನಿರ್ಬಂಧಿತ ಪ್ರದೇಶ ${zoneName} ಪ್ರವೇಶಿಸಿದ್ದಾರೆ.`,
+      }
+    case 'zone_transition':
+      return {
+        englishText: `A person moved between configured zones near ${zoneName} at ${enTs}.`,
+        kannadaText: `ಸೂಚನೆ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ${zoneName} ಸೇರಿದಂತೆ ನಿಗದಿತ ಪ್ರದೇಶಗಳ ನಡುವೆ ಚಲಿಸಿದ್ದಾರೆ.`,
+      }
+    case 'repeated_zone_entry':
+      return {
+        englishText: `Repeated entries into zone ${zoneName} were confirmed at ${enTs}.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ${zoneName} ಪ್ರದೇಶಕ್ಕೆ ಪುನರಾವರ್ತಿತ ಪ್ರವೇಶ ದೃಢಪಟ್ಟಿದೆ.`,
       }
     case 'object_movement_without_person':
       return {
@@ -250,6 +300,7 @@ async function dispatchAnnouncement(params: {
   source: 'analysis' | 'live'
   eventType: string
   eventTitle: string
+  zoneName?: string
   timestampSeconds: number
   priority: AlertPriority
   settings: UserVoiceSettings
@@ -282,6 +333,7 @@ async function dispatchAnnouncement(params: {
   const { englishText, kannadaText } = buildEventAnnouncementTexts({
     eventType: params.eventType,
     timestampSeconds: params.timestampSeconds,
+    zoneName: params.zoneName,
   })
 
   const alertId = `va-${params.dedupKey}`
@@ -367,7 +419,12 @@ export async function processDiscoveredEventsForVoice(params: {
       severity: evt.severity,
       requiresHumanReview: evt.explanation.requires_human_review,
     })
-    if (!isPriorityAllowed(priority, settings)) continue
+    if (evt.explanation.alerts_enabled === false) continue
+    const eventSettings =
+      evt.explanation.voice_alerts_enabled === false
+        ? { ...settings, voice_alerts_enabled: false }
+        : settings
+    if (!isPriorityAllowed(priority, eventSettings)) continue
 
     const dedupKey = `${params.analysisId}:${evt.id}`
     if (announcedSessionKeys.has(dedupKey)) continue
@@ -381,9 +438,10 @@ export async function processDiscoveredEventsForVoice(params: {
         source: 'analysis',
         eventType: evt.event_type,
         eventTitle: evt.title,
+        zoneName: evt.explanation.zone_name ?? undefined,
         timestampSeconds: evt.start_timestamp,
         priority,
-        settings,
+        settings: eventSettings,
         userInitiated: Boolean(params.userInitiated),
       })
       if (rec) created.push(rec)
@@ -393,6 +451,7 @@ export async function processDiscoveredEventsForVoice(params: {
       const { englishText, kannadaText } = buildEventAnnouncementTexts({
         eventType: evt.event_type,
         timestampSeconds: evt.start_timestamp,
+        zoneName: evt.explanation.zone_name ?? undefined,
       })
       const queuedCard: VoiceAlertRecord = {
         id: `va-${dedupKey}`,
@@ -403,11 +462,11 @@ export async function processDiscoveredEventsForVoice(params: {
         eventTitle: evt.title,
         timestampSeconds: evt.start_timestamp,
         priority,
-        language: settings.voice_language,
+        language: eventSettings.voice_language,
         englishText,
         kannadaText,
-        speechStatus: settings.voice_alerts_enabled ? 'partial_text_fallback' : 'disabled',
-        statusNote: settings.voice_alerts_enabled
+        speechStatus: eventSettings.voice_alerts_enabled ? 'partial_text_fallback' : 'disabled',
+        statusNote: eventSettings.voice_alerts_enabled
           ? 'Queued in Voice Alert Center to prevent overlapping speech. Click Play to hear.'
           : 'Voice alerts are disabled in Settings. Displayed as text alert.',
         createdAt: new Date().toISOString(),
@@ -428,12 +487,17 @@ export async function announceLiveMonitoringEvent(
   liveEvent: LiveMonitoringEventInput,
   settings: UserVoiceSettings = activeSettings,
 ): Promise<VoiceAlertRecord | null> {
+  if (liveEvent.alertsEnabled === false) return null
   const priority = classifyEventPriority({
     category: liveEvent.category,
     severity: liveEvent.severity,
     requiresHumanReview: liveEvent.requiresHumanReview,
   })
   const dedupKey = `live:${liveEvent.streamId}:${liveEvent.id}`
+  const eventSettings =
+    liveEvent.voiceAlertsEnabled === false
+      ? { ...settings, voice_alerts_enabled: false }
+      : settings
 
   return dispatchAnnouncement({
     dedupKey,
@@ -442,9 +506,10 @@ export async function announceLiveMonitoringEvent(
     source: 'live',
     eventType: liveEvent.eventType,
     eventTitle: liveEvent.title,
+    zoneName: liveEvent.zoneName,
     timestampSeconds: liveEvent.timestampSeconds,
     priority,
-    settings,
+    settings: eventSettings,
     userInitiated: false,
   })
 }

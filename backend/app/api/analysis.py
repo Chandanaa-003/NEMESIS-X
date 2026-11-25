@@ -30,7 +30,9 @@ from app.schemas.analysis import (
     TrackSummaryInfo,
     TrackTimelinePointInfo,
 )
+from app.services.identity_engine import get_track_identity_codes
 from app.services.track_explorer import (
+    format_track_code,
     get_track_detail_payload,
     get_track_frames_payload,
     load_enriched_tracks_data,
@@ -60,6 +62,7 @@ def _get_owned_analysis(analysis_id: str, user_id: int, db: Session) -> Analysis
 def _load_detections_data(
     analysis_id: str,
     api_prefix: str,
+    identity_codes: dict[int, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Read detections.json if present and return summary + per-filename map."""
     settings = get_settings()
@@ -98,6 +101,12 @@ def _load_detections_data(
             parsed_dets.append(
                 DetectedObjectInfo(
                     track_id=int(raw_tid) if raw_tid is not None else None,
+                    track_code=format_track_code(int(raw_tid)) if raw_tid is not None else None,
+                    identity_code=(
+                        (identity_codes or {}).get(int(raw_tid))
+                        if raw_tid is not None
+                        else None
+                    ),
                     class_id=int(det["class_id"]),
                     class_name=str(det["class_name"]),
                     confidence=float(det["confidence"]),
@@ -181,6 +190,46 @@ def _load_tracks_data(analysis_id: str) -> tuple[dict[str, Any], list[TrackSumma
         )
 
     return summary, parsed_tracks
+
+
+def _decorate_track_summaries(
+    tracks: list[TrackSummaryInfo],
+    identity_codes: dict[int, str],
+) -> list[TrackSummaryInfo]:
+    return [
+        track.model_copy(update={"identity_code": identity_codes.get(track.track_id)})
+        for track in tracks
+    ]
+
+
+def _decorate_observation_frames(
+    frames: list[Any],
+    identity_codes: dict[int, str],
+) -> list[Any]:
+    decorated = []
+    for frame in frames:
+        selected = frame.selected_detection
+        selected_detection = selected.model_copy(
+            update={"identity_code": identity_codes.get(selected.track_id)}
+        )
+        others = [
+            detection.model_copy(
+                update={
+                    "identity_code": (
+                        identity_codes.get(detection.track_id)
+                        if detection.track_id is not None
+                        else None
+                    )
+                }
+            )
+            for detection in frame.other_detections
+        ]
+        decorated.append(
+            frame.model_copy(
+                update={"selected_detection": selected_detection, "other_detections": others}
+            )
+        )
+    return decorated
 
 
 @router.get(
@@ -371,8 +420,18 @@ def get_analysis_results(
         }
 
         api_prefix = settings.api_v1_prefix
-        detections_summary, detections_by_file = _load_detections_data(analysis.id, api_prefix)
+        identity_codes = get_track_identity_codes(
+            db,
+            source_type="analysis",
+            source_id=analysis.id,
+        )
+        detections_summary, detections_by_file = _load_detections_data(
+            analysis.id,
+            api_prefix,
+            identity_codes,
+        )
         tracks_summary, tracks = load_enriched_tracks_data(analysis.id, db=db)
+        tracks = _decorate_track_summaries(tracks, identity_codes)
 
         for item in raw_meta.get("frames", []):
             filename = str(item.get("filename", ""))
@@ -433,6 +492,11 @@ def get_analysis_detections(
     detections_summary, detections_by_file = _load_detections_data(
         analysis.id,
         settings.api_v1_prefix,
+        get_track_identity_codes(
+            db,
+            source_type="analysis",
+            source_id=analysis.id,
+        ),
     )
     frames = [ExtractedFrameInfo(**entry) for entry in detections_by_file.values()]
 
@@ -458,6 +522,10 @@ def get_analysis_tracks(
     """Return persistent ByteTrack object trajectories and temporal spans."""
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
     tracks_summary, tracks = load_enriched_tracks_data(analysis.id, db=db)
+    tracks = _decorate_track_summaries(
+        tracks,
+        get_track_identity_codes(db, source_type="analysis", source_id=analysis.id),
+    )
 
     return AnalysisTracksResponse(
         analysis_id=analysis.id,
@@ -482,11 +550,22 @@ def get_analysis_track_detail(
     """Return movement history, last known position, annotated frames, and events for a track."""
     settings = get_settings()
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
-    return get_track_detail_payload(
+    payload = get_track_detail_payload(
         analysis=analysis,
         track_id=track_id,
         db=db,
         api_prefix=settings.api_v1_prefix,
+    )
+    identity_codes = get_track_identity_codes(
+        db,
+        source_type="analysis",
+        source_id=analysis.id,
+    )
+    return payload.model_copy(
+        update={
+            "track": _decorate_track_summaries([payload.track], identity_codes)[0],
+            "frames": _decorate_observation_frames(payload.frames, identity_codes),
+        }
     )
 
 
@@ -504,11 +583,23 @@ def get_analysis_track_frames(
     """Return chronologically ordered annotated frames containing the selected tracking ID."""
     settings = get_settings()
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
-    return get_track_frames_payload(
+    payload = get_track_frames_payload(
         analysis=analysis,
         track_id=track_id,
         db=db,
         api_prefix=settings.api_v1_prefix,
+    )
+    return payload.model_copy(
+        update={
+            "frames": _decorate_observation_frames(
+                payload.frames,
+                get_track_identity_codes(
+                    db,
+                    source_type="analysis",
+                    source_id=analysis.id,
+                ),
+            )
+        }
     )
 
 

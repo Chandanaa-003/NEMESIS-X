@@ -16,6 +16,7 @@ from app.models.detection import Detection
 from app.models.event import Event
 from app.models.track import Track
 from app.models.user import User
+from app.models.zone import Zone
 from app.schemas.event import (
     EventDiscoveryResponse,
     EventEvidenceFrame,
@@ -26,6 +27,7 @@ from app.schemas.event import (
 )
 from app.services.event_engine import discover_events_for_analysis
 from app.services.evidence_engine import collect_evidence_for_analysis
+from app.services.zone_engine import discover_recorded_zone_events
 
 router = APIRouter(prefix="/analysis", tags=["Events"])
 
@@ -127,6 +129,12 @@ def _to_event_record(
         object_track_id=payload.get("object_track_id"),
         association_uncertainty=payload.get("association_uncertainty"),
         anomaly_score=payload.get("anomaly_score"),
+        zone_id=payload.get("zone_id"),
+        zone_name=payload.get("zone_name"),
+        zone_type=payload.get("zone_type"),
+        duration_seconds=payload.get("duration_seconds"),
+        alerts_enabled=bool(payload.get("alerts_enabled", True)),
+        voice_alerts_enabled=bool(payload.get("voice_alerts_enabled", True)),
     )
 
     category_val = event.category
@@ -254,7 +262,34 @@ def discover_events(
                 analysis_id=analysis.id,
                 analysis_dir=analysis_dir,
             )
+            zones = (
+                db.query(Zone)
+                .filter(
+                    Zone.video_id == analysis.video_id,
+                    Zone.user_id == current_user.id,
+                )
+                .order_by(Zone.created_at.asc())
+                .all()
+            )
+            zone_events = discover_recorded_zone_events(
+                detections_path=analysis_dir / "detections.json",
+                zones=[
+                    {
+                        "id": zone.id,
+                        "name": zone.name,
+                        "zone_type": zone.zone_type,
+                        "polygon": zone.polygon,
+                        "settings": zone.settings,
+                    }
+                    for zone in zones
+                ],
+            )
         except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
@@ -278,7 +313,7 @@ def discover_events(
                     severity=draft.severity,
                     evidence_frame_ids=draft.evidence_frame_ids,
                 )
-                for draft in output.events
+                for draft in [*output.events, *zone_events]
             ]
             if db_events:
                 db.add_all(db_events)

@@ -320,6 +320,7 @@ def build_track_observation_frames(
                 tid = int(raw_tid) if raw_tid is not None else None
                 parsed_det = DetectedObjectInfo(
                     track_id=tid,
+                    track_code=format_track_code(tid) if tid is not None else None,
                     class_id=int(det["class_id"]),
                     class_name=str(det["class_name"]),
                     confidence=float(det["confidence"]),
@@ -401,6 +402,7 @@ def build_track_observation_frames(
                     frame_height=frame_h,
                     selected_detection=DetectedObjectInfo(
                         track_id=track.track_id,
+                        track_code=format_track_code(track.track_id),
                         class_id=track.class_id,
                         class_name=track.class_name,
                         confidence=pt.confidence,
