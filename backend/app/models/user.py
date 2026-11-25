@@ -9,6 +9,7 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.analysis import Analysis
     from app.models.evidence import Evidence
+    from app.models.user_settings import UserSettings
     from app.models.video import Video
 
 
@@ -38,5 +39,10 @@ class User(Base):
     )
     evidence_items: Mapped[list["Evidence"]] = relationship(
         back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    settings: Mapped["UserSettings | None"] = relationship(
+        back_populates="user",
+        uselist=False,
         cascade="all, delete-orphan",
     )

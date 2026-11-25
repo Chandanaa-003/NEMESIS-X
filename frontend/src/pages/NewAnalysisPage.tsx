@@ -28,7 +28,21 @@ import {
   type AnalysisStatusResponse,
 } from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
+import { setActiveVoiceSettings, getActiveVoiceSettings } from '../services/eventAnnouncementService'
+import { fetchUserVoiceSettings, type VoiceLanguageMode } from '../services/settingsService'
 import { uploadVideoFile, type VideoRecord } from '../services/videoService'
+
+const VOICE_TO_FORM_LANG: Record<VoiceLanguageMode, AnalysisConfigState['alertLanguage']> = {
+  english: 'English',
+  kannada: 'Kannada',
+  bilingual: 'Both',
+}
+
+const FORM_TO_VOICE_LANG: Record<AnalysisConfigState['alertLanguage'], VoiceLanguageMode> = {
+  English: 'english',
+  Kannada: 'kannada',
+  Both: 'bilingual',
+}
 
 const SENSITIVITY_CONFIDENCE: Record<AnalysisConfigState['sensitivity'], number> = {
   Low: 0.6,
@@ -74,7 +88,33 @@ export function NewAnalysisPage() {
 
   const handleConfigChange = (nextConfig: AnalysisConfigState) => {
     setConfig(nextConfig)
+    const current = getActiveVoiceSettings()
+    setActiveVoiceSettings({
+      ...current,
+      voice_language: FORM_TO_VOICE_LANG[nextConfig.alertLanguage],
+      voice_alerts_enabled: nextConfig.voiceAlerts,
+    })
   }
+
+  useEffect(() => {
+    let cancelled = false
+    fetchUserVoiceSettings()
+      .then((saved) => {
+        if (cancelled) return
+        setActiveVoiceSettings(saved)
+        setConfig((prev) => ({
+          ...prev,
+          alertLanguage: VOICE_TO_FORM_LANG[saved.voice_language],
+          voiceAlerts: saved.voice_alerts_enabled,
+        }))
+      })
+      .catch(() => {
+        // Fallback to default config state cleanly
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Effect 1: Poll analysis status independently until completed or failed.
   // Keeping only `analysisId` in deps prevents status updates from cancelling active fetches.

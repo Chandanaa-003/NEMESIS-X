@@ -60,6 +60,7 @@ def init_db() -> None:
     import app.models.evidence  # noqa: F401
     import app.models.track  # noqa: F401
     import app.models.user  # noqa: F401
+    import app.models.user_settings  # noqa: F401
     import app.models.video  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

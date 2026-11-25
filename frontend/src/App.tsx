@@ -14,6 +14,7 @@ import { LoginPage } from './pages/LoginPage'
 import { NewAnalysisPage } from './pages/NewAnalysisPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
+import { SettingsPage } from './pages/SettingsPage'
 
 function ScrollManager() {
   const { pathname, hash } = useLocation()
@@ -91,17 +92,7 @@ export function App() {
                     />
                   }
                 />
-                <Route
-                  path="/dashboard/settings"
-                  element={
-                    <DashboardSectionPage
-                      title="Settings"
-                      routePath="/dashboard/settings"
-                      iconKey="settings"
-                      description="Workspace preferences placeholder for alert language settings (English & Kannada), thresholds, and account configuration."
-                    />
-                  }
-                />
+                <Route path="/dashboard/settings" element={<SettingsPage />} />
               </Route>
             </Route>
 

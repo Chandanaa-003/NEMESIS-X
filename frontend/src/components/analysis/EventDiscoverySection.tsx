@@ -23,7 +23,13 @@ import {
   type EventSeverity,
 } from '../../services/analysisService'
 import { getAuthErrorMessage } from '../../services/authService'
+import {
+  processDiscoveredEventsForVoice,
+  setActiveVoiceSettings,
+} from '../../services/eventAnnouncementService'
+import { fetchUserVoiceSettings } from '../../services/settingsService'
 import { PdfDownloadButton } from './PdfDownloadButton'
+import { VoiceAlertCenter } from './VoiceAlertCenter'
 
 type FilterValue = 'all' | EventCategory
 
@@ -246,12 +252,31 @@ export function EventDiscoverySection({
 
     let cancelled = false
 
-    getAnalysisEvents(analysisId)
-      .then((data) => {
+    const settingsPromise = fetchUserVoiceSettings()
+      .then((savedSettings) => {
         if (!cancelled) {
-          setDiscoveryData(data)
-          setErrorMsg(null)
-          setLoadedForId(analysisId)
+          setActiveVoiceSettings(savedSettings)
+        }
+        return savedSettings
+      })
+      .catch(() => undefined)
+
+    getAnalysisEvents(analysisId)
+      .then(async (data) => {
+        if (cancelled) return
+        setDiscoveryData(data)
+        setErrorMsg(null)
+        setLoadedForId(analysisId)
+        if (data.events.length > 0) {
+          const resolvedSettings = await settingsPromise
+          if (!cancelled) {
+            void processDiscoveredEventsForVoice({
+              analysisId,
+              events: data.events,
+              settings: resolvedSettings,
+              userInitiated: false,
+            })
+          }
         }
       })
       .catch((error) => {
@@ -275,6 +300,13 @@ export function EventDiscoverySection({
       const data = await discoverAnalysisEvents(analysisId)
       setDiscoveryData(data)
       setLoadedForId(analysisId)
+      if (data.events.length > 0) {
+        void processDiscoveredEventsForVoice({
+          analysisId,
+          events: data.events,
+          userInitiated: true,
+        })
+      }
     } catch (error) {
       setErrorMsg(getAuthErrorMessage(error, 'Failed to run event discovery.'))
     } finally {
@@ -474,6 +506,9 @@ export function EventDiscoverySection({
           ))}
         </div>
       )}
+
+      {/* Voice Alert Center synced with discovered events */}
+      <VoiceAlertCenter currentAnalysisId={analysisId} />
     </motion.section>
   )
 }
