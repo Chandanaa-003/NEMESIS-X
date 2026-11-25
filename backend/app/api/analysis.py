@@ -20,9 +20,12 @@ from app.schemas.analysis import (
     AnalysisStartRequest,
     AnalysisStartResponse,
     AnalysisStatusResponse,
+    AnalysisTracksResponse,
     BoundingBoxInfo,
     DetectedObjectInfo,
     ExtractedFrameInfo,
+    TrackSummaryInfo,
+    TrackTimelinePointInfo,
 )
 from app.workers.analysis_worker import run_video_analysis_job
 
@@ -66,6 +69,7 @@ def _load_detections_data(
 
     summary = {
         "model_name": raw_det.get("model_name"),
+        "tracker_name": raw_det.get("tracker_name"),
         "device": raw_det.get("device", "cpu"),
         "image_size": raw_det.get("image_size"),
         "confidence_threshold": raw_det.get("confidence_threshold"),
@@ -82,8 +86,10 @@ def _load_detections_data(
         parsed_dets: list[DetectedObjectInfo] = []
         for det in frame_entry.get("detections", []):
             bbox = det.get("bbox", {})
+            raw_tid = det.get("track_id")
             parsed_dets.append(
                 DetectedObjectInfo(
+                    track_id=int(raw_tid) if raw_tid is not None else None,
                     class_id=int(det["class_id"]),
                     class_name=str(det["class_name"]),
                     confidence=float(det["confidence"]),
@@ -109,11 +115,71 @@ def _load_detections_data(
     return summary, by_filename
 
 
+def _load_tracks_data(analysis_id: str) -> tuple[dict[str, Any], list[TrackSummaryInfo]]:
+    """Read tracks.json if present and return summary + persistent track records."""
+    settings = get_settings()
+    tracks_path = settings.resolved_processed_dir / analysis_id / "tracks.json"
+    if not tracks_path.exists():
+        return {}, []
+
+    try:
+        raw_tracks = json.loads(tracks_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read object tracking results.",
+        ) from exc
+
+    summary = {
+        "model_name": raw_tracks.get("model_name"),
+        "tracker_name": raw_tracks.get("tracker_name", "bytetrack"),
+        "total_tracks": raw_tracks.get("total_tracks", 0),
+        "tracks_by_class": raw_tracks.get("tracks_by_class", {}),
+    }
+
+    parsed_tracks: list[TrackSummaryInfo] = []
+    for item in raw_tracks.get("tracks", []):
+        timeline_points = [
+            TrackTimelinePointInfo(
+                frame_index=int(pt["frame_index"]),
+                timestamp_seconds=float(pt["timestamp_seconds"]),
+                center_x=float(pt["center_x"]),
+                center_y=float(pt["center_y"]),
+                confidence=float(pt["confidence"]),
+                bbox=BoundingBoxInfo(
+                    x1=float(pt["bbox"]["x1"]),
+                    y1=float(pt["bbox"]["y1"]),
+                    x2=float(pt["bbox"]["x2"]),
+                    y2=float(pt["bbox"]["y2"]),
+                ),
+            )
+            for pt in item.get("timeline_points", [])
+        ]
+        parsed_tracks.append(
+            TrackSummaryInfo(
+                track_id=int(item["track_id"]),
+                class_id=int(item["class_id"]),
+                class_name=str(item["class_name"]),
+                first_seen_frame=int(item["first_seen_frame"]),
+                last_seen_frame=int(item["last_seen_frame"]),
+                first_seen_timestamp=float(item["first_seen_timestamp"]),
+                last_seen_timestamp=float(item["last_seen_timestamp"]),
+                duration_seconds=float(item["duration_seconds"]),
+                frame_count=int(item["frame_count"]),
+                avg_confidence=float(item["avg_confidence"]),
+                max_confidence=float(item["max_confidence"]),
+                timeline_points=timeline_points,
+            )
+        )
+
+    return summary, parsed_tracks
+
+
 @router.post(
     "/{video_id}/start",
     response_model=AnalysisStartResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Queue video frame extraction and object detection",
+    summary="Queue video frame extraction, detection, and tracking",
 )
 def start_analysis(
     video_id: str,
@@ -122,7 +188,7 @@ def start_analysis(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnalysisStartResponse:
-    """Start a background preprocessing + YOLO detection job for an owned video."""
+    """Start a background preprocessing + YOLO detection + ByteTrack job for an owned video."""
     video = (
         db.query(Video)
         .filter(Video.id == video_id, Video.user_id == current_user.id)
@@ -214,14 +280,14 @@ def get_analysis_status(
 @router.get(
     "/{analysis_id}/results",
     response_model=AnalysisResultsResponse,
-    summary="Get preprocessing summary, extracted frames, and detections",
+    summary="Get preprocessing summary, extracted frames, detections, and tracks",
 )
 def get_analysis_results(
     analysis_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> AnalysisResultsResponse:
-    """Return extracted frame metadata, summary, and object detections for an owned job."""
+    """Return frame metadata, detections, and temporal tracks for an owned job."""
     settings = get_settings()
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
 
@@ -234,6 +300,8 @@ def get_analysis_results(
         "extracted_count": 0,
     }
     detections_summary: dict[str, Any] = {}
+    tracks_summary: dict[str, Any] = {}
+    tracks: list[TrackSummaryInfo] = []
 
     if analysis.status == "completed" and metadata_path.exists():
         try:
@@ -256,6 +324,7 @@ def get_analysis_results(
 
         api_prefix = settings.api_v1_prefix
         detections_summary, detections_by_file = _load_detections_data(analysis.id, api_prefix)
+        tracks_summary, tracks = _load_tracks_data(analysis.id)
 
         for item in raw_meta.get("frames", []):
             filename = str(item.get("filename", ""))
@@ -284,6 +353,8 @@ def get_analysis_results(
         error_message=analysis.error_message,
         summary=summary,
         detections_summary=detections_summary,
+        tracks_summary=tracks_summary,
+        tracks=tracks,
         frames=frames,
         started_at=analysis.started_at,
         completed_at=analysis.completed_at,
@@ -317,6 +388,29 @@ def get_analysis_detections(
         status=analysis.status,  # type: ignore[arg-type]
         summary=detections_summary,
         frames=frames,
+    )
+
+
+@router.get(
+    "/{analysis_id}/tracks",
+    response_model=AnalysisTracksResponse,
+    summary="Get persistent object tracks and temporal memory for an owned analysis",
+)
+def get_analysis_tracks(
+    analysis_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AnalysisTracksResponse:
+    """Return persistent ByteTrack object trajectories and temporal spans."""
+    analysis = _get_owned_analysis(analysis_id, current_user.id, db)
+    tracks_summary, tracks = _load_tracks_data(analysis.id)
+
+    return AnalysisTracksResponse(
+        analysis_id=analysis.id,
+        video_id=analysis.video_id,
+        status=analysis.status,  # type: ignore[arg-type]
+        summary=tracks_summary,
+        tracks=tracks,
     )
 
 

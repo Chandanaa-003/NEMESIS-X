@@ -29,6 +29,7 @@ class Detection(Base):
     )
     frame_index: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     timestamp_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    track_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     class_id: Mapped[int] = mapped_column(Integer, nullable=False)
     class_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)

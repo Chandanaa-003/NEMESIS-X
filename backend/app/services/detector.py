@@ -2,7 +2,9 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
+import sys
 import threading
 from typing import Any
 
@@ -107,6 +109,46 @@ DetectionProgressCallback = Callable[[int, int], None]
 
 _model_lock = threading.Lock()
 _cached_models: dict[str, Any] = {}
+_dll_dir_handles: list[Any] = []
+
+
+def _ensure_windows_vc_runtime() -> None:
+    """Register an existing host VC++ runtime DLL folder if System32 lacks msvcp140.dll."""
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+    system_dll = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "msvcp140.dll"
+    if system_dll.exists():
+        return
+
+    candidates: list[Path] = []
+    if conda_prefix := os.environ.get("CONDA_PREFIX"):
+        candidates.append(Path(conda_prefix) / "Library" / "bin")
+    candidates.extend(
+        [
+            Path(r"C:\ProgramData\anaconda3\Library\bin"),
+            Path.home() / "anaconda3" / "Library" / "bin",
+            Path.home() / "miniconda3" / "Library" / "bin",
+        ]
+    )
+    for raw_entry in os.environ.get("PATH", "").split(os.pathsep):
+        if raw_entry:
+            candidates.append(Path(raw_entry))
+
+    seen: set[Path] = set()
+    for folder in candidates:
+        try:
+            resolved = folder.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if (resolved / "msvcp140.dll").is_file():
+            try:
+                _dll_dir_handles.append(os.add_dll_directory(str(resolved)))
+                return
+            except OSError:
+                continue
 
 
 def get_detection_model(model_name: str | None = None) -> Any:
@@ -118,6 +160,8 @@ def get_detection_model(model_name: str | None = None) -> Any:
     with _model_lock:
         if resolved_name in _cached_models:
             return _cached_models[resolved_name]
+
+        _ensure_windows_vc_runtime()
 
         try:
             from ultralytics import YOLO

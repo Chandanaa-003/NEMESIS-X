@@ -8,8 +8,9 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.models.analysis import Analysis
 from app.models.detection import Detection
+from app.models.track import Track
 from app.models.video import Video
-from app.services.detector import detect_objects_in_analysis
+from app.services.tracker import track_objects_in_analysis
 from app.services.video_processor import extract_video_frames
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def run_video_analysis_job(
     target_fps: float = 1.0,
     confidence_threshold: float | None = None,
 ) -> None:
-    """Execute frame extraction and CPU-only YOLO object detection in an isolated DB session."""
+    """Execute frame extraction, CPU YOLO detection, and ByteTrack tracking in one job."""
     settings = get_settings()
     db = SessionLocal()
 
@@ -96,36 +97,39 @@ def run_video_analysis_job(
         analysis.progress = 55
         db.commit()
 
-        # Stage 2 (55%..98%): Single-frame CPU-only YOLO object detection
-        last_detect_pct = 55
+        # Stage 2 (55%..98%): Single-frame CPU YOLO detection + ByteTrack temporal association
+        last_track_pct = 55
 
-        def on_detect_progress(done_frames: int, total_extracted: int) -> None:
-            nonlocal last_detect_pct
+        def on_track_progress(done_frames: int, total_extracted: int) -> None:
+            nonlocal last_track_pct
             pct = 55 + int((done_frames / max(total_extracted, 1)) * 43)
             pct = min(98, max(55, pct))
-            if pct - last_detect_pct < 5 and done_frames < total_extracted:
+            if pct - last_track_pct < 5 and done_frames < total_extracted:
                 return
-            last_detect_pct = pct
+            last_track_pct = pct
             try:
                 analysis.progress = pct
                 db.commit()
             except SQLAlchemyError:
                 db.rollback()
 
-        detection_result = detect_objects_in_analysis(
+        tracking_result = track_objects_in_analysis(
             analysis_id=analysis.id,
             video_id=video.id,
             analysis_dir=output_dir,
             confidence_threshold=confidence_threshold,
             image_size=settings.detection_image_size,
             model_name=settings.yolo_model_name,
-            progress_callback=on_detect_progress,
+            tracker_config=settings.tracker_config,
+            progress_callback=on_track_progress,
         )
 
-        # Persist structured detections in SQLite cleanly
+        # Persist per-frame detections (with track_id) and temporal track summaries in SQLite
         db.query(Detection).filter(Detection.analysis_id == analysis.id).delete()
+        db.query(Track).filter(Track.analysis_id == analysis.id).delete()
+
         detection_rows: list[Detection] = []
-        for frame_rec in detection_result.frames:
+        for frame_rec in tracking_result.frames:
             for det in frame_rec.detections:
                 detection_rows.append(
                     Detection(
@@ -133,6 +137,7 @@ def run_video_analysis_job(
                         video_id=video.id,
                         frame_index=frame_rec.frame_index,
                         timestamp_seconds=frame_rec.timestamp_seconds,
+                        track_id=det.track_id,
                         class_id=det.class_id,
                         class_name=det.class_name,
                         confidence=det.confidence,
@@ -144,6 +149,27 @@ def run_video_analysis_job(
                 )
         if detection_rows:
             db.add_all(detection_rows)
+
+        track_rows = [
+            Track(
+                analysis_id=analysis.id,
+                video_id=video.id,
+                track_id=t.track_id,
+                class_id=t.class_id,
+                class_name=t.class_name,
+                first_seen_frame=t.first_seen_frame,
+                last_seen_frame=t.last_seen_frame,
+                first_seen_timestamp=t.first_seen_timestamp,
+                last_seen_timestamp=t.last_seen_timestamp,
+                duration_seconds=t.duration_seconds,
+                frame_count=t.frame_count,
+                avg_confidence=t.avg_confidence,
+                max_confidence=t.max_confidence,
+            )
+            for t in tracking_result.tracks
+        ]
+        if track_rows:
+            db.add_all(track_rows)
 
         video.status = "completed"
         analysis.status = "completed"

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     detection_confidence: float = 0.40
     detection_image_size: int = 416
     detection_device: str = "cpu"
+    tracker_config: str = "bytetrack.yaml"
 
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),

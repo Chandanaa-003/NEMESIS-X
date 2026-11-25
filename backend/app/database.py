@@ -1,6 +1,6 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -27,11 +27,26 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def _apply_safe_sqlite_migrations() -> None:
+    """Safely add new nullable columns to existing SQLite tables without data loss."""
+    inspector = inspect(engine)
+    if "detections" in inspector.get_table_names():
+        existing_cols = {col["name"] for col in inspector.get_columns("detections")}
+        if "track_id" not in existing_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE detections ADD COLUMN track_id INTEGER"))
+                conn.execute(
+                    text("CREATE INDEX IF NOT EXISTS ix_detections_track_id ON detections (track_id)")
+                )
+
+
 def init_db() -> None:
-    """Import ORM models and create database tables if they do not exist."""
+    """Import ORM models and create/migrate database tables safely."""
     import app.models.analysis  # noqa: F401
     import app.models.detection  # noqa: F401
+    import app.models.track  # noqa: F401
     import app.models.user  # noqa: F401
     import app.models.video  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _apply_safe_sqlite_migrations()

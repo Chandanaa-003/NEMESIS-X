@@ -9,6 +9,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.detection import Detection
+    from app.models.track import Track
     from app.models.user import User
     from app.models.video import Video
 
@@ -58,6 +59,10 @@ class Analysis(Base):
     video: Mapped["Video"] = relationship(back_populates="analyses")
     user: Mapped["User"] = relationship(back_populates="analyses")
     detections: Mapped[list["Detection"]] = relationship(
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+    )
+    tracks: Mapped[list["Track"]] = relationship(
         back_populates="analysis",
         cascade="all, delete-orphan",
     )

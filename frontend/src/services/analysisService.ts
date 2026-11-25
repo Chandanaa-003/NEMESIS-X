@@ -30,6 +30,7 @@ export interface BoundingBoxInfo {
 }
 
 export interface DetectedObjectInfo {
+  track_id?: number | null
   class_id: number
   class_name: string
   confidence: number
@@ -47,6 +48,30 @@ export interface ExtractedFrameInfo {
   detections: DetectedObjectInfo[]
 }
 
+export interface TrackTimelinePointInfo {
+  frame_index: number
+  timestamp_seconds: number
+  center_x: number
+  center_y: number
+  confidence: number
+  bbox: BoundingBoxInfo
+}
+
+export interface TrackSummaryInfo {
+  track_id: number
+  class_id: number
+  class_name: string
+  first_seen_frame: number
+  last_seen_frame: number
+  first_seen_timestamp: number
+  last_seen_timestamp: number
+  duration_seconds: number
+  frame_count: number
+  avg_confidence: number
+  max_confidence: number
+  timeline_points: TrackTimelinePointInfo[]
+}
+
 export interface AnalysisSummary {
   duration_seconds?: number | null
   original_dimensions?: { width: number; height: number } | null
@@ -59,12 +84,20 @@ export interface AnalysisSummary {
 
 export interface DetectionsSummary {
   model_name?: string | null
+  tracker_name?: string | null
   device?: string
   image_size?: number
   confidence_threshold?: number
   total_detections?: number
   frames_with_detections?: number
   class_counts?: Record<string, number>
+}
+
+export interface TracksSummary {
+  model_name?: string | null
+  tracker_name?: string
+  total_tracks?: number
+  tracks_by_class?: Record<string, number>
 }
 
 export interface AnalysisResultsResponse {
@@ -76,10 +109,20 @@ export interface AnalysisResultsResponse {
   error_message: string | null
   summary: AnalysisSummary
   detections_summary: DetectionsSummary
+  tracks_summary: TracksSummary
+  tracks: TrackSummaryInfo[]
   frames: ExtractedFrameInfo[]
   started_at: string | null
   completed_at: string | null
   created_at: string
+}
+
+export interface AnalysisTracksResponse {
+  analysis_id: string
+  video_id: string
+  status: AnalysisStatus
+  summary: TracksSummary
+  tracks: TrackSummaryInfo[]
 }
 
 export async function startVideoAnalysis(
@@ -101,6 +144,11 @@ export async function getAnalysisStatus(analysisId: string): Promise<AnalysisSta
 
 export async function getAnalysisResults(analysisId: string): Promise<AnalysisResultsResponse> {
   const response = await apiClient.get<AnalysisResultsResponse>(`/analysis/${analysisId}/results`)
+  return response.data
+}
+
+export async function getAnalysisTracks(analysisId: string): Promise<AnalysisTracksResponse> {
+  const response = await apiClient.get<AnalysisTracksResponse>(`/analysis/${analysisId}/tracks`)
   return response.data
 }
 

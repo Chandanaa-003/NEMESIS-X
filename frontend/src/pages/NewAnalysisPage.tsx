@@ -408,7 +408,7 @@ export function NewAnalysisPage() {
                       {analysisStatus?.status === 'queued'
                         ? 'Queued for Processing...'
                         : (analysisStatus?.progress ?? 0) >= 55
-                          ? 'Detecting Objects (CPU)...'
+                          ? 'Tracking Objects (CPU)...'
                           : 'Extracting Frames...'}
                     </span>
                   </>
