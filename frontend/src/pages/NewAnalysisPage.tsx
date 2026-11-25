@@ -1,4 +1,5 @@
 import {
+  Activity,
   AlertCircle,
   ArrowRight,
   CheckCircle2,
@@ -6,15 +7,24 @@ import {
   Loader2,
   Radio,
   Sparkles,
+  UploadCloud,
 } from 'lucide-react'
 import { motion } from 'motion/react'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AnalysisConfigForm,
   type AnalysisConfigState,
 } from '../components/analysis/AnalysisConfigForm'
+import { ExtractedFramesGallery } from '../components/analysis/ExtractedFramesGallery'
 import { VideoUploadDropzone } from '../components/analysis/VideoUploadDropzone'
+import {
+  getAnalysisResults,
+  getAnalysisStatus,
+  startVideoAnalysis,
+  type AnalysisResultsResponse,
+  type AnalysisStatusResponse,
+} from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
 import { uploadVideoFile, type VideoRecord } from '../services/videoService'
 
@@ -26,30 +36,86 @@ export function NewAnalysisPage() {
     alertLanguage: 'Both',
     voiceAlerts: true,
   })
+
   const [isUploading, setIsUploading] = useState(false)
   const [uploadProgress, setUploadProgress] = useState<number>(0)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadedVideo, setUploadedVideo] = useState<VideoRecord | null>(null)
+
+  const [isStartingAnalysis, setIsStartingAnalysis] = useState(false)
+  const [analysisId, setAnalysisId] = useState<string | null>(null)
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatusResponse | null>(null)
+  const [analysisResults, setAnalysisResults] = useState<AnalysisResultsResponse | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
+
+  const isProcessingActive =
+    analysisStatus?.status === 'queued' || analysisStatus?.status === 'processing'
 
   const handleFileSelect = (file: File | null) => {
     setSelectedFile(file)
     setUploadError(null)
     setUploadedVideo(null)
     setUploadProgress(0)
+    setAnalysisId(null)
+    setAnalysisStatus(null)
+    setAnalysisResults(null)
+    setAnalysisError(null)
   }
 
   const handleConfigChange = (nextConfig: AnalysisConfigState) => {
     setConfig(nextConfig)
   }
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  // Poll analysis status until completed or failed
+  useEffect(() => {
+    if (!analysisId) return
+    if (analysisStatus?.status === 'completed' || analysisStatus?.status === 'failed') {
+      return
+    }
+
+    let cancelled = false
+
+    const pollStatus = async () => {
+      try {
+        const statusData = await getAnalysisStatus(analysisId)
+        if (cancelled) return
+        setAnalysisStatus(statusData)
+
+        if (statusData.status === 'completed') {
+          const resultsData = await getAnalysisResults(analysisId)
+          if (!cancelled) {
+            setAnalysisResults(resultsData)
+          }
+        } else if (statusData.status === 'failed') {
+          setAnalysisError(statusData.error_message || 'Video preprocessing failed.')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAnalysisError(
+            getAuthErrorMessage(error, 'Failed to fetch video processing status.'),
+          )
+        }
+      }
+    }
+
+    void pollStatus()
+    const timer = window.setInterval(() => {
+      void pollStatus()
+    }, 1200)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [analysisId, analysisStatus?.status])
+
+  const handleUploadSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!selectedFile || isUploading) return
+    if (!selectedFile || isUploading || uploadedVideo) return
 
     setIsUploading(true)
     setUploadProgress(0)
     setUploadError(null)
-    setUploadedVideo(null)
 
     try {
       const record = await uploadVideoFile(selectedFile, (percent) => {
@@ -62,6 +128,36 @@ export function NewAnalysisPage() {
       )
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  const handleStartAnalysis = async () => {
+    if (!uploadedVideo || isStartingAnalysis || isProcessingActive) return
+
+    setIsStartingAnalysis(true)
+    setAnalysisError(null)
+    setAnalysisResults(null)
+
+    try {
+      const started = await startVideoAnalysis(uploadedVideo.id, 1.0)
+      setAnalysisId(started.analysis_id)
+      setAnalysisStatus({
+        analysis_id: started.analysis_id,
+        video_id: started.video_id,
+        status: started.status,
+        progress: 0,
+        total_frames: 0,
+        processed_frames: 0,
+        sampling_interval: 1,
+        error_message: null,
+        started_at: null,
+        completed_at: null,
+        created_at: new Date().toISOString(),
+      })
+    } catch (error) {
+      setAnalysisError(getAuthErrorMessage(error, 'Unable to start video analysis.'))
+    } finally {
+      setIsStartingAnalysis(false)
     }
   }
 
@@ -87,7 +183,6 @@ export function NewAnalysisPage() {
 
         {/* Two Source Selection Cards */}
         <div className="mt-6 grid gap-4 md:grid-cols-2">
-          {/* Card 1: Recorded Video Analysis (Active) */}
           <div className="relative flex items-start justify-between gap-4 rounded-2xl border-2 border-[#2563EB] bg-[#EFF6FF]/60 p-5 shadow-2xs">
             <div className="flex items-start gap-3.5">
               <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[#2563EB] text-white">
@@ -103,15 +198,13 @@ export function NewAnalysisPage() {
                   </span>
                 </div>
                 <p className="mt-1 text-xs leading-relaxed text-[#64748B]">
-                  Upload an MP4, MOV, or AVI clip and configure detection, sensitivity, and alert
-                  preferences below.
+                  Upload an MP4, MOV, or AVI clip, then extract timestamped frames for analysis.
                 </p>
               </div>
             </div>
             <CheckCircle2 className="h-5 w-5 shrink-0 text-[#2563EB]" />
           </div>
 
-          {/* Card 2: Live Webcam Monitoring (Navigates to Coming Soon placeholder) */}
           <Link
             to="/dashboard/live"
             className="group flex items-start justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 transition-all hover:border-[#7C3AED]/40 hover:bg-[#F5F8FC] hover:shadow-xs"
@@ -141,7 +234,7 @@ export function NewAnalysisPage() {
       </motion.section>
 
       {/* Main Upload + Configuration Form */}
-      <form onSubmit={handleSubmit} className="grid gap-6 lg:grid-cols-12">
+      <form onSubmit={handleUploadSubmit} className="grid gap-6 lg:grid-cols-12">
         {/* Left: Video Upload Section */}
         <motion.section
           initial={{ opacity: 0, y: 14 }}
@@ -164,7 +257,7 @@ export function NewAnalysisPage() {
           <VideoUploadDropzone selectedFile={selectedFile} onFileSelect={handleFileSelect} />
         </motion.section>
 
-        {/* Right: Analysis Configuration + Start Button */}
+        {/* Right: Analysis Configuration + Upload / Start Analysis Actions */}
         <motion.section
           initial={{ opacity: 0, y: 14 }}
           animate={{ opacity: 1, y: 0 }}
@@ -177,7 +270,7 @@ export function NewAnalysisPage() {
                 2. Analysis Configuration
               </h3>
               <p className="text-xs text-[#64748B]">
-                Tailor detection and alert output before uploading.
+                Tailor detection and alert preferences for this video session.
               </p>
             </div>
 
@@ -213,53 +306,132 @@ export function NewAnalysisPage() {
             {uploadedVideo && (
               <div
                 role="status"
-                className="mb-4 space-y-1.5 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-xs text-emerald-950"
+                className="mb-4 space-y-1 rounded-xl border border-emerald-200 bg-emerald-50/80 px-4 py-3 text-xs text-emerald-950"
               >
                 <div className="flex items-center gap-2 font-semibold text-emerald-800">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  <span>Video Uploaded Successfully</span>
+                  <span>Video Uploaded</span>
                 </div>
                 <p className="font-mono text-[11px] text-emerald-900">
-                  ID: {uploadedVideo.id} · Status: {uploadedVideo.status}
-                </p>
-                <p className="text-[11px] leading-relaxed text-emerald-800">
-                  Saved to <code className="font-mono">{uploadedVideo.file_path}</code> with{' '}
-                  {config.profile} profile ({config.sensitivity} sensitivity, {config.alertLanguage}{' '}
-                  alerts). AI processing pipeline will run in the next development stage.
+                  Video ID: {uploadedVideo.id}
                 </p>
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={!selectedFile || isUploading}
-              className={`flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition-all ${
-                selectedFile && !isUploading
-                  ? 'cursor-pointer bg-gradient-to-r from-[#2563EB] to-[#7C3AED] text-white shadow-md shadow-[#2563EB]/20 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#2563EB]/25'
-                  : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
-              }`}
-            >
-              {isUploading ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Uploading Video ({uploadProgress}%)</span>
-                </>
-              ) : (
-                <>
-                  <span>Start Analysis</span>
-                  <ArrowRight className="h-4 w-4" />
-                </>
-              )}
-            </button>
+            {analysisStatus && (
+              <div className="mb-4 rounded-xl border border-slate-200 bg-[#F5F8FC] p-3.5">
+                <div className="flex items-center justify-between gap-2 text-xs font-semibold">
+                  <span className="inline-flex items-center gap-1.5 text-[#111827] capitalize">
+                    <Activity className="h-3.5 w-3.5 text-[#2563EB]" />
+                    Status: {analysisStatus.status}
+                  </span>
+                  <span className="font-mono text-[#2563EB]">{analysisStatus.progress}%</span>
+                </div>
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    style={{ width: `${analysisStatus.progress}%` }}
+                    className={`h-full rounded-full transition-all duration-200 ${
+                      analysisStatus.status === 'failed'
+                        ? 'bg-rose-500'
+                        : 'bg-gradient-to-r from-[#2563EB] to-[#7C3AED]'
+                    }`}
+                  />
+                </div>
+                <p className="mt-2 font-mono text-[11px] text-[#64748B]">
+                  Frames scanned: {analysisStatus.processed_frames}
+                  {analysisStatus.total_frames > 0 ? ` / ${analysisStatus.total_frames}` : ''} ·
+                  Step: every {analysisStatus.sampling_interval} frame(s)
+                </p>
+              </div>
+            )}
+
+            {analysisError && (
+              <div
+                role="alert"
+                className="mb-4 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-xs leading-relaxed font-medium text-rose-700"
+              >
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{analysisError}</span>
+              </div>
+            )}
+
+            {!uploadedVideo ? (
+              <button
+                type="submit"
+                disabled={!selectedFile || isUploading}
+                className={`flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition-all ${
+                  selectedFile && !isUploading
+                    ? 'cursor-pointer bg-[#2563EB] text-white shadow-md shadow-[#2563EB]/20 hover:bg-[#1D4ED8]'
+                    : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                }`}
+              >
+                {isUploading ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Uploading ({uploadProgress}%)</span>
+                  </>
+                ) : (
+                  <>
+                    <UploadCloud className="h-4 w-4" />
+                    <span>Upload Video</span>
+                  </>
+                )}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStartAnalysis}
+                disabled={
+                  isStartingAnalysis ||
+                  isProcessingActive ||
+                  analysisStatus?.status === 'completed'
+                }
+                className={`flex w-full items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition-all ${
+                  !isStartingAnalysis &&
+                  !isProcessingActive &&
+                  analysisStatus?.status !== 'completed'
+                    ? 'cursor-pointer bg-gradient-to-r from-[#2563EB] to-[#7C3AED] text-white shadow-md shadow-[#2563EB]/20 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#2563EB]/25'
+                    : 'cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400'
+                }`}
+              >
+                {isStartingAnalysis || isProcessingActive ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>
+                      {analysisStatus?.status === 'queued'
+                        ? 'Queued for Processing...'
+                        : 'Extracting Frames...'}
+                    </span>
+                  </>
+                ) : analysisStatus?.status === 'completed' ? (
+                  <>
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                    <span className="text-emerald-700">
+                      Preprocessing Complete ({analysisResults?.frames.length ?? 0} frames)
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span>Start Analysis</span>
+                    <ArrowRight className="h-4 w-4" />
+                  </>
+                )}
+              </button>
+            )}
 
             {!selectedFile && (
               <p className="mt-2 text-center text-[11px] text-[#64748B]">
-                Select a valid MP4, MOV, or AVI video above to enable Start Analysis.
+                Select a valid MP4, MOV, or AVI video above to upload and analyze.
               </p>
             )}
           </div>
         </motion.section>
       </form>
+
+      {/* Extracted Frames Gallery after completion */}
+      {analysisResults && analysisResults.status === 'completed' && (
+        <ExtractedFramesGallery results={analysisResults} />
+      )}
     </div>
   )
 }

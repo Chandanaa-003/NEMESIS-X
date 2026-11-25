@@ -1,0 +1,85 @@
+import { apiClient } from './api'
+
+export type AnalysisStatus = 'queued' | 'processing' | 'completed' | 'failed'
+
+export interface AnalysisStartResponse {
+  analysis_id: string
+  video_id: string
+  status: AnalysisStatus
+}
+
+export interface AnalysisStatusResponse {
+  analysis_id: string
+  video_id: string
+  status: AnalysisStatus
+  progress: number
+  total_frames: number
+  processed_frames: number
+  sampling_interval: number
+  error_message: string | null
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
+export interface ExtractedFrameInfo {
+  frame_index: number
+  source_frame_index: number
+  timestamp_seconds: number
+  filename: string
+  url: string
+}
+
+export interface AnalysisSummary {
+  duration_seconds?: number | null
+  original_dimensions?: { width: number; height: number } | null
+  fps?: number
+  total_frames?: number
+  sampling_interval?: number
+  max_width_applied?: number
+  extracted_count?: number
+}
+
+export interface AnalysisResultsResponse {
+  analysis_id: string
+  video_id: string
+  status: AnalysisStatus
+  progress: number
+  sampling_interval: number
+  error_message: string | null
+  summary: AnalysisSummary
+  frames: ExtractedFrameInfo[]
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
+export async function startVideoAnalysis(
+  videoId: string,
+  targetFps = 1.0,
+): Promise<AnalysisStartResponse> {
+  const response = await apiClient.post<AnalysisStartResponse>(`/analysis/${videoId}/start`, {
+    target_fps: targetFps,
+  })
+  return response.data
+}
+
+export async function getAnalysisStatus(analysisId: string): Promise<AnalysisStatusResponse> {
+  const response = await apiClient.get<AnalysisStatusResponse>(`/analysis/${analysisId}/status`)
+  return response.data
+}
+
+export async function getAnalysisResults(analysisId: string): Promise<AnalysisResultsResponse> {
+  const response = await apiClient.get<AnalysisResultsResponse>(`/analysis/${analysisId}/results`)
+  return response.data
+}
+
+export async function fetchExtractedFrameBlobUrl(
+  analysisId: string,
+  filename: string,
+): Promise<string> {
+  const response = await apiClient.get<Blob>(`/analysis/${analysisId}/frames/${filename}`, {
+    responseType: 'blob',
+  })
+  return URL.createObjectURL(response.data)
+}

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 if TYPE_CHECKING:
+    from app.models.analysis import Analysis
     from app.models.video import Video
 
 
@@ -27,6 +28,10 @@ class User(Base):
     )
 
     videos: Mapped[list["Video"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    analyses: Mapped[list["Analysis"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )

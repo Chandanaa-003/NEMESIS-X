@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     reports_dir: str = "../storage/reports"
     max_upload_size_bytes: int = 500 * 1024 * 1024
     upload_chunk_size_bytes: int = 1024 * 1024
+    default_target_fps: float = 1.0
+    max_extracted_frames: int = 300
+    max_frame_width: int = 640
+    jpeg_quality: int = 85
 
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),
@@ -63,6 +67,14 @@ class Settings(BaseSettings):
     def resolved_upload_dir(self) -> Path:
         """Resolve upload storage path relative to the backend directory."""
         raw_path = Path(self.upload_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @property
+    def resolved_processed_dir(self) -> Path:
+        """Resolve processed frames storage path relative to the backend directory."""
+        raw_path = Path(self.processed_dir)
         resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved
