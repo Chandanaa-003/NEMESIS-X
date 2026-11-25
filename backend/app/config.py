@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     processed_dir: str = "../storage/processed"
     evidence_dir: str = "../storage/evidence"
     reports_dir: str = "../storage/reports"
+    live_dir: str = "../storage/live"
     max_upload_size_bytes: int = 500 * 1024 * 1024
     upload_chunk_size_bytes: int = 1024 * 1024
     default_target_fps: float = 1.0
@@ -97,6 +98,14 @@ class Settings(BaseSettings):
     def resolved_reports_dir(self) -> Path:
         """Resolve PDF reports storage path relative to the backend directory."""
         raw_path = Path(self.reports_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @property
+    def resolved_live_dir(self) -> Path:
+        """Resolve live monitoring event snapshots storage path."""
+        raw_path = Path(self.live_dir)
         resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved

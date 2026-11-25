@@ -155,12 +155,12 @@ export function buildEventAnnouncementTexts(params: {
       }
     case 'person_approaching_object':
       return {
-        englishText: `An object interaction was detected at ${enTs}. A person approached an object. Please review the evidence.`,
+        englishText: `A possible object interaction was detected at ${enTs}. A person approached an object. Please review the evidence.`,
         kannadaText: `ಒಂದು ವಸ್ತುವಿನ ಚಲನೆ ಪತ್ತೆಯಾಗಿದೆ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ವಸ್ತುವಿನ ಹತ್ತಿರ ಬಂದಿದ್ದಾರೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
       }
     case 'person_moving_away_from_object':
       return {
-        englishText: `An object interaction was detected at ${enTs}. A person moved away from an object.`,
+        englishText: `A possible object interaction was detected at ${enTs}. A person moved away from an object. Please review the evidence.`,
         kannadaText: `ಒಂದು ವಸ್ತುವಿನ ಚಲನೆ ಪತ್ತೆಯಾಗಿದೆ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ವಸ್ತುವಿನಿಂದ ದೂರ ಸರಿದಿದ್ದಾರೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
       }
     case 'possible_unattended_object':

@@ -9,6 +9,7 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.analysis import Analysis
     from app.models.evidence import Evidence
+    from app.models.live_session import LiveEvent, LiveSession
     from app.models.user_settings import UserSettings
     from app.models.video import Video
 
@@ -44,5 +45,13 @@ class User(Base):
     settings: Mapped["UserSettings | None"] = relationship(
         back_populates="user",
         uselist=False,
+        cascade="all, delete-orphan",
+    )
+    live_sessions: Mapped[list["LiveSession"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+    live_events: Mapped[list["LiveEvent"]] = relationship(
+        back_populates="user",
         cascade="all, delete-orphan",
     )

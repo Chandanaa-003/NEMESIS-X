@@ -10,6 +10,7 @@ import { DashboardSectionPage } from './pages/DashboardSectionPage'
 import { EventTimelinePage } from './pages/EventTimelinePage'
 import { EvidenceCenterPage } from './pages/EvidenceCenterPage'
 import { HomePage } from './pages/HomePage'
+import { LiveMonitoringPage } from './pages/LiveMonitoringPage'
 import { LoginPage } from './pages/LoginPage'
 import { NewAnalysisPage } from './pages/NewAnalysisPage'
 import { NotFoundPage } from './pages/NotFoundPage'
@@ -67,18 +68,7 @@ export function App() {
                   path="/dashboard/new-analysis"
                   element={<Navigate to="/analysis/new" replace />}
                 />
-                <Route
-                  path="/dashboard/live"
-                  element={
-                    <DashboardSectionPage
-                      title="Live Monitoring"
-                      routePath="/dashboard/live"
-                      iconKey="live"
-                      badgeText="COMING SOON"
-                      description="Coming Soon — Real-time webcam and camera stream monitoring with instant English & Kannada alerts will be available in an upcoming development stage."
-                    />
-                  }
-                />
+                <Route path="/dashboard/live" element={<LiveMonitoringPage />} />
                 <Route path="/dashboard/timeline" element={<EventTimelinePage />} />
                 <Route path="/dashboard/evidence" element={<EvidenceCenterPage />} />
                 <Route

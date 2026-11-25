@@ -67,77 +67,23 @@ def _clamp_confidence(value: float) -> float:
     return round(min(0.95, max(0.35, value)), 3)
 
 
-def discover_events_for_analysis(
+def discover_events_from_data(
     *,
-    analysis_id: str,
-    analysis_dir: Path,
+    tracks_data: list[dict[str, Any]],
+    frame_ts_map: dict[int, float],
+    frame_width: int,
+    frame_height: int,
     config: InteractionConfig | None = None,
-) -> EventDiscoveryOutput:
-    """Analyze saved detection and tracking outputs to discover rule-based events."""
+    exit_grace_frames: int = 0,
+) -> list[DiscoveredEventDraft]:
+    """Run rule-based event discovery in-memory over normalized tracks and timestamps.
+
+    Shared by both offline video analyses and live webcam monitoring sessions.
+    """
     cfg = config or InteractionConfig()
-
-    metadata_path = analysis_dir / "metadata.json"
-    detections_path = analysis_dir / "detections.json"
-    tracks_path = analysis_dir / "tracks.json"
-
-    if not metadata_path.exists() or not detections_path.exists() or not tracks_path.exists():
-        raise FileNotFoundError(
-            "Detection and tracking prerequisites (metadata.json, detections.json, tracks.json) "
-            "are missing for this analysis. Run video processing before discovering events."
-        )
-
-    raw_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
-    raw_det = json.loads(detections_path.read_text(encoding="utf-8"))
-    raw_tracks = json.loads(tracks_path.read_text(encoding="utf-8"))
-
-    frame_entries = raw_meta.get("frames", [])
-    det_frames = raw_det.get("frames", [])
-    tracks_data = raw_tracks.get("tracks", [])
-
-    total_detected_objects = int(raw_det.get("total_detections", 0))
-    total_unique_tracks = int(raw_tracks.get("total_tracks", len(tracks_data)))
-
-    frame_ts_map: dict[int, float] = {
-        int(item["frame_index"]): float(item["timestamp_seconds"]) for item in frame_entries
-    }
     all_frame_indices = sorted(frame_ts_map.keys())
-
-    # Resolve frame dimensions matching detections/tracks coordinate space
-    frame_width = 640
-    frame_height = 360
-    if det_frames:
-        frame_width = int(det_frames[0].get("frame_width") or 640)
-        frame_height = int(det_frames[0].get("frame_height") or 360)
-    elif raw_meta.get("original_dimensions"):
-        orig_w = int(raw_meta["original_dimensions"].get("width") or 640)
-        orig_h = int(raw_meta["original_dimensions"].get("height") or 360)
-        max_w = int(raw_meta.get("max_width_applied") or orig_w)
-        if orig_w > max_w > 0:
-            frame_width = max_w
-            frame_height = max(1, round(orig_h * (max_w / float(orig_w))))
-        else:
-            frame_width, frame_height = orig_w, orig_h
-
-    if total_detected_objects == 0 or total_unique_tracks == 0:
-        events_path = analysis_dir / "events.json"
-        events_path.write_text(
-            json.dumps(
-                {
-                    "analysis_id": analysis_id,
-                    "total_detected_objects": total_detected_objects,
-                    "total_unique_tracks": total_unique_tracks,
-                    "events": [],
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        return EventDiscoveryOutput(
-            total_detected_objects=total_detected_objects,
-            total_unique_tracks=total_unique_tracks,
-            events=[],
-            events_path=events_path,
-        )
+    if not tracks_data:
+        return []
 
     interactions = analyze_track_interactions(
         tracks_data=tracks_data,
@@ -233,7 +179,7 @@ def discover_events_for_analysis(
                 )
 
             # 2. Person leaving the camera view
-            if prof.last_seen_frame < max_f:
+            if prof.last_seen_frame < max_f - exit_grace_frames:
                 edge_note = " near the frame boundary" if prof.ended_near_edge else ""
                 discovered.append(
                     build_event(
@@ -262,11 +208,10 @@ def discover_events_for_analysis(
                     )
                 )
         else:
-            # Non-person tracked object rules
             obj_label = prof.class_name
 
             # 6. Object disappearing from view
-            if prof.frame_count >= 2 and prof.last_seen_frame < max_f:
+            if prof.frame_count >= 2 and prof.last_seen_frame < max_f - exit_grace_frames:
                 discovered.append(
                     build_event(
                         event_type="object_disappearing",
@@ -552,6 +497,88 @@ def discover_events_for_analysis(
         )
 
     discovered.sort(key=lambda evt: (evt.start_timestamp, evt.end_timestamp, evt.event_type))
+    return discovered
+
+
+def discover_events_for_analysis(
+    *,
+    analysis_id: str,
+    analysis_dir: Path,
+    config: InteractionConfig | None = None,
+) -> EventDiscoveryOutput:
+    """Analyze saved detection and tracking outputs to discover rule-based events."""
+    cfg = config or InteractionConfig()
+
+    metadata_path = analysis_dir / "metadata.json"
+    detections_path = analysis_dir / "detections.json"
+    tracks_path = analysis_dir / "tracks.json"
+
+    if not metadata_path.exists() or not detections_path.exists() or not tracks_path.exists():
+        raise FileNotFoundError(
+            "Detection and tracking prerequisites (metadata.json, detections.json, tracks.json) "
+            "are missing for this analysis. Run video processing before discovering events."
+        )
+
+    raw_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+    raw_det = json.loads(detections_path.read_text(encoding="utf-8"))
+    raw_tracks = json.loads(tracks_path.read_text(encoding="utf-8"))
+
+    frame_entries = raw_meta.get("frames", [])
+    det_frames = raw_det.get("frames", [])
+    tracks_data = raw_tracks.get("tracks", [])
+
+    total_detected_objects = int(raw_det.get("total_detections", 0))
+    total_unique_tracks = int(raw_tracks.get("total_tracks", len(tracks_data)))
+
+    frame_ts_map: dict[int, float] = {
+        int(item["frame_index"]): float(item["timestamp_seconds"]) for item in frame_entries
+    }
+
+    # Resolve frame dimensions matching detections/tracks coordinate space
+    frame_width = 640
+    frame_height = 360
+    if det_frames:
+        frame_width = int(det_frames[0].get("frame_width") or 640)
+        frame_height = int(det_frames[0].get("frame_height") or 360)
+    elif raw_meta.get("original_dimensions"):
+        orig_w = int(raw_meta["original_dimensions"].get("width") or 640)
+        orig_h = int(raw_meta["original_dimensions"].get("height") or 360)
+        max_w = int(raw_meta.get("max_width_applied") or orig_w)
+        if orig_w > max_w > 0:
+            frame_width = max_w
+            frame_height = max(1, round(orig_h * (max_w / float(orig_w))))
+        else:
+            frame_width, frame_height = orig_w, orig_h
+
+    if total_detected_objects == 0 or total_unique_tracks == 0:
+        events_path = analysis_dir / "events.json"
+        events_path.write_text(
+            json.dumps(
+                {
+                    "analysis_id": analysis_id,
+                    "total_detected_objects": total_detected_objects,
+                    "total_unique_tracks": total_unique_tracks,
+                    "events": [],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return EventDiscoveryOutput(
+            total_detected_objects=total_detected_objects,
+            total_unique_tracks=total_unique_tracks,
+            events=[],
+            events_path=events_path,
+        )
+
+    discovered = discover_events_from_data(
+        tracks_data=tracks_data,
+        frame_ts_map=frame_ts_map,
+        frame_width=frame_width,
+        frame_height=frame_height,
+        config=cfg,
+        exit_grace_frames=0,
+    )
 
     category_counts = Counter(evt.category for evt in discovered)
     events_path = analysis_dir / "events.json"

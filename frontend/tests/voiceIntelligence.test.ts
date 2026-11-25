@@ -308,7 +308,7 @@ describe('Voice Intelligence & Event Announcement Tests', () => {
     assert.equal(secondPass.length, 0)
     assert.equal(mock.spoken.length, 1)
 
-    // Live monitoring adapter accepts real future live events cleanly
+    // Live monitoring adapter accepts real future live events cleanly (High priority bypasses cooldown)
     const liveAlert = await announceLiveMonitoringEvent(
       {
         id: 'live-evt-1',
@@ -324,6 +324,23 @@ describe('Voice Intelligence & Event Announcement Tests', () => {
     )
     assert.ok(liveAlert)
     assert.equal(liveAlert.priority, 'high')
+    assert.equal(mock.spoken.length, 2)
+
+    // Cooldown suppresses rapid automatic low-priority live event right after prior speech
+    const cooledDown = await announceLiveMonitoringEvent(
+      {
+        id: 'live-evt-2',
+        streamId: 'cam-1',
+        eventType: 'person_entering',
+        category: 'people_movement',
+        title: 'Another person entered view',
+        timestampSeconds: 27,
+        severity: 'low',
+        requiresHumanReview: false,
+      },
+      { ...DEFAULT_VOICE_SETTINGS, voice_language: 'english', cooldown_seconds: 30 },
+    )
+    assert.equal(cooledDown, null)
     assert.equal(mock.spoken.length, 2)
   })
 })
