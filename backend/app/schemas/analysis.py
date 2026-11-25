@@ -30,6 +30,7 @@ class AnalysisStatusResponse(BaseModel):
     progress: int
     total_frames: int
     processed_frames: int
+    extracted_frames: int
     sampling_interval: int
     error_message: str | None = None
     started_at: datetime | None = None

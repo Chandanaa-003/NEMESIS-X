@@ -56,6 +56,8 @@ export function NewAnalysisPage() {
 
   const isProcessingActive =
     analysisStatus?.status === 'queued' || analysisStatus?.status === 'processing'
+  const isLoadingResults =
+    analysisStatus?.status === 'completed' && analysisResults === null && analysisError === null
 
   const handleFileSelect = (file: File | null) => {
     setSelectedFile(file)
@@ -72,14 +74,20 @@ export function NewAnalysisPage() {
     setConfig(nextConfig)
   }
 
-  // Poll analysis status until completed or failed
+  // Effect 1: Poll analysis status independently until completed or failed.
+  // Keeping only `analysisId` in deps prevents status updates from cancelling active fetches.
   useEffect(() => {
     if (!analysisId) return
-    if (analysisStatus?.status === 'completed' || analysisStatus?.status === 'failed') {
-      return
-    }
 
     let cancelled = false
+    let timerId: number | undefined
+
+    const stopPolling = () => {
+      if (timerId !== undefined) {
+        window.clearInterval(timerId)
+        timerId = undefined
+      }
+    }
 
     const pollStatus = async () => {
       try {
@@ -88,15 +96,14 @@ export function NewAnalysisPage() {
         setAnalysisStatus(statusData)
 
         if (statusData.status === 'completed') {
-          const resultsData = await getAnalysisResults(analysisId)
-          if (!cancelled) {
-            setAnalysisResults(resultsData)
-          }
+          stopPolling()
         } else if (statusData.status === 'failed') {
+          stopPolling()
           setAnalysisError(statusData.error_message || 'Video preprocessing failed.')
         }
       } catch (error) {
         if (!cancelled) {
+          stopPolling()
           setAnalysisError(
             getAuthErrorMessage(error, 'Failed to fetch video processing status.'),
           )
@@ -105,13 +112,43 @@ export function NewAnalysisPage() {
     }
 
     void pollStatus()
-    const timer = window.setInterval(() => {
+    timerId = window.setInterval(() => {
       void pollStatus()
     }, 1200)
 
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      stopPolling()
+    }
+  }, [analysisId])
+
+  // Effect 2: Fetch full extracted frames, detections, and tracks once status transitions to completed.
+  useEffect(() => {
+    if (!analysisId || analysisStatus?.status !== 'completed') return
+
+    let cancelled = false
+
+    getAnalysisResults(analysisId)
+      .then((resultsData) => {
+        if (cancelled) return
+        setAnalysisResults(resultsData)
+        const count = resultsData.summary.extracted_count ?? resultsData.frames.length
+        if (count === 0 || resultsData.frames.length === 0) {
+          setAnalysisError(
+            'Preprocessing finished, but no extracted frames were returned by the server.',
+          )
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setAnalysisError(
+            getAuthErrorMessage(error, 'Failed to load extracted frames and detection results.'),
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
     }
   }, [analysisId, analysisStatus?.status])
 
@@ -155,6 +192,7 @@ export function NewAnalysisPage() {
         progress: 0,
         total_frames: 0,
         processed_frames: 0,
+        extracted_frames: 0,
         sampling_interval: 1,
         error_message: null,
         started_at: null,
@@ -347,6 +385,7 @@ export function NewAnalysisPage() {
                 <p className="mt-2 font-mono text-[11px] text-[#64748B]">
                   Frames scanned: {analysisStatus.processed_frames}
                   {analysisStatus.total_frames > 0 ? ` / ${analysisStatus.total_frames}` : ''} ·
+                  Extracted: {analysisResults?.frames.length ?? analysisStatus.extracted_frames} ·
                   Step: every {analysisStatus.sampling_interval} frame(s)
                 </p>
               </div>
@@ -413,12 +452,20 @@ export function NewAnalysisPage() {
                     </span>
                   </>
                 ) : analysisStatus?.status === 'completed' ? (
-                  <>
-                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                    <span className="text-emerald-700">
-                      Preprocessing Complete ({analysisResults?.frames.length ?? 0} frames)
-                    </span>
-                  </>
+                  isLoadingResults ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin text-[#2563EB]" />
+                      <span>Loading Extracted Frames...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                      <span className="text-emerald-700">
+                        Preprocessing Complete (
+                        {analysisResults?.frames.length ?? analysisStatus.extracted_frames} frames)
+                      </span>
+                    </>
+                  )
                 ) : (
                   <>
                     <span>Start Analysis</span>

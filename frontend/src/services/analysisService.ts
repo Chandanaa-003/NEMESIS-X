@@ -15,6 +15,7 @@ export interface AnalysisStatusResponse {
   progress: number
   total_frames: number
   processed_frames: number
+  extracted_frames: number
   sampling_interval: number
   error_message: string | null
   started_at: string | null

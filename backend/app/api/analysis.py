@@ -221,6 +221,7 @@ def start_analysis(
         progress=0,
         total_frames=0,
         processed_frames=0,
+        extracted_frames=0,
         sampling_interval=1,
     )
     video.status = "queued"
@@ -269,6 +270,7 @@ def get_analysis_status(
         progress=analysis.progress,
         total_frames=analysis.total_frames,
         processed_frames=analysis.processed_frames,
+        extracted_frames=analysis.extracted_frames,
         sampling_interval=analysis.sampling_interval,
         error_message=analysis.error_message,
         started_at=analysis.started_at,
@@ -303,7 +305,12 @@ def get_analysis_results(
     tracks_summary: dict[str, Any] = {}
     tracks: list[TrackSummaryInfo] = []
 
-    if analysis.status == "completed" and metadata_path.exists():
+    if analysis.status == "completed":
+        if not metadata_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Analysis completed, but frame metadata.json was not found on disk.",
+            )
         try:
             raw_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -342,6 +349,12 @@ def get_analysis_results(
                     frame_height=det_entry["frame_height"] if det_entry else None,
                     detections=det_entry["detections"] if det_entry else [],
                 )
+            )
+
+        if len(frames) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Analysis completed, but zero extracted frames were available.",
             )
 
     return AnalysisResultsResponse(

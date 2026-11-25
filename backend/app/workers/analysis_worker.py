@@ -65,11 +65,13 @@ def run_video_analysis_job(
             total_frames: int,
             progress_pct: int,
             sampling_interval: int,
+            extracted_frames: int,
         ) -> None:
             try:
                 scaled_pct = min(55, max(1, int(progress_pct * 0.55)))
                 analysis.processed_frames = processed_frames
                 analysis.total_frames = total_frames
+                analysis.extracted_frames = extracted_frames
                 analysis.progress = scaled_pct
                 analysis.sampling_interval = sampling_interval
                 db.commit()
@@ -93,6 +95,7 @@ def run_video_analysis_job(
         video.height = extract_result.height
         analysis.total_frames = extract_result.total_frames
         analysis.processed_frames = extract_result.total_frames
+        analysis.extracted_frames = len(extract_result.extracted_frames)
         analysis.sampling_interval = extract_result.sampling_interval
         analysis.progress = 55
         db.commit()

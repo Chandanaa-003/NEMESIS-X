@@ -28,15 +28,27 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def _apply_safe_sqlite_migrations() -> None:
-    """Safely add new nullable columns to existing SQLite tables without data loss."""
+    """Safely add new nullable/defaulted columns to existing SQLite tables without data loss."""
     inspector = inspect(engine)
-    if "detections" in inspector.get_table_names():
+    table_names = set(inspector.get_table_names())
+
+    if "detections" in table_names:
         existing_cols = {col["name"] for col in inspector.get_columns("detections")}
         if "track_id" not in existing_cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE detections ADD COLUMN track_id INTEGER"))
                 conn.execute(
                     text("CREATE INDEX IF NOT EXISTS ix_detections_track_id ON detections (track_id)")
+                )
+
+    if "analyses" in table_names:
+        analysis_cols = {col["name"] for col in inspector.get_columns("analyses")}
+        if "extracted_frames" not in analysis_cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE analyses ADD COLUMN extracted_frames INTEGER NOT NULL DEFAULT 0"
+                    )
                 )
 
 

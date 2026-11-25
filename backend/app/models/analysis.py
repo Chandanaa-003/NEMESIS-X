@@ -46,6 +46,7 @@ class Analysis(Base):
     progress: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     total_frames: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     processed_frames: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    extracted_frames: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     sampling_interval: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

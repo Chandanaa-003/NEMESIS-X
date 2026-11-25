@@ -31,7 +31,7 @@ class VideoProcessingResult:
     metadata_path: Path
 
 
-ProgressCallback = Callable[[int, int, int, int], None]
+ProgressCallback = Callable[[int, int, int, int, int], None]
 
 
 def _resize_to_max_width(frame, max_width: int):
@@ -61,7 +61,13 @@ def extract_video_frames(
         raise FileNotFoundError("Uploaded video file could not be found on disk.")
 
     frames_dir = output_dir / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        write_probe = frames_dir / ".write_check"
+        write_probe.write_text("ok", encoding="utf-8")
+        write_probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise OSError(f"Output frames directory '{frames_dir}' is not writable.") from exc
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -134,7 +140,7 @@ def extract_video_frames(
 
         if progress_callback is not None:
             pct = min(95, max(1, int((1 / max(estimated_total, 1)) * 100)))
-            progress_callback(1, estimated_total, pct, sampling_interval)
+            progress_callback(1, estimated_total, pct, sampling_interval, len(extracted))
             last_reported_pct = pct
 
         while True:
@@ -153,8 +159,11 @@ def extract_video_frames(
             denom = max(estimated_total, processed_count)
             pct = min(95, max(1, int((processed_count / denom) * 100)))
             if progress_callback is not None and (pct - last_reported_pct >= 5):
-                progress_callback(processed_count, denom, pct, sampling_interval)
+                progress_callback(processed_count, denom, pct, sampling_interval, len(extracted))
                 last_reported_pct = pct
+
+        if len(extracted) == 0:
+            raise ValueError("No frames could be extracted from the uploaded video.")
 
         actual_total_frames = source_idx + 1
         duration_seconds = round(actual_total_frames / fps, 3) if fps > 0 else None
