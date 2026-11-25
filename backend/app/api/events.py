@@ -17,16 +17,15 @@ from app.models.event import Event
 from app.models.track import Track
 from app.models.user import User
 from app.schemas.event import (
-    EventCategory,
     EventDiscoveryResponse,
     EventEvidenceFrame,
     EventExplanation,
     EventRecordInfo,
-    EventSeverity,
     EventSummaryInfo,
     ImportantTimestampInfo,
 )
 from app.services.event_engine import discover_events_for_analysis
+from app.services.evidence_engine import collect_evidence_for_analysis
 
 router = APIRouter(prefix="/analysis", tags=["Events"])
 
@@ -279,6 +278,8 @@ def discover_events(
             ]
             if db_events:
                 db.add_all(db_events)
+            db.flush()
+            collect_evidence_for_analysis(analysis=analysis, events=db_events, db=db)
             db.commit()
         except SQLAlchemyError as exc:
             db.rollback()

@@ -8,6 +8,7 @@ import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { DashboardSectionPage } from './pages/DashboardSectionPage'
 import { EventTimelinePage } from './pages/EventTimelinePage'
+import { EvidenceCenterPage } from './pages/EvidenceCenterPage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
 import { NewAnalysisPage } from './pages/NewAnalysisPage'
@@ -78,17 +79,7 @@ export function App() {
                   }
                 />
                 <Route path="/dashboard/timeline" element={<EventTimelinePage />} />
-                <Route
-                  path="/dashboard/evidence"
-                  element={
-                    <DashboardSectionPage
-                      title="Evidence Center"
-                      routePath="/dashboard/evidence"
-                      iconKey="evidence"
-                      description="Timestamped visual evidence and incident report center placeholder. Annotated keyframes and evidence clips from storage/evidence will appear here."
-                    />
-                  }
-                />
+                <Route path="/dashboard/evidence" element={<EvidenceCenterPage />} />
                 <Route
                   path="/dashboard/history"
                   element={

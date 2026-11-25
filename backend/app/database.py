@@ -57,6 +57,7 @@ def init_db() -> None:
     import app.models.analysis  # noqa: F401
     import app.models.detection  # noqa: F401
     import app.models.event  # noqa: F401
+    import app.models.evidence  # noqa: F401
     import app.models.track  # noqa: F401
     import app.models.user  # noqa: F401
     import app.models.video  # noqa: F401

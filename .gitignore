@@ -39,6 +39,7 @@ storage/uploads/*
 storage/processed/*
 storage/evidence/*
 storage/reports/*
+*.pdf
 *.mp4
 *.avi
 *.mov

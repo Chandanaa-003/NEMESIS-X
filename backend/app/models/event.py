@@ -9,6 +9,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.analysis import Analysis
+    from app.models.evidence import Evidence
 
 
 class Event(Base):
@@ -46,3 +47,7 @@ class Event(Base):
     )
 
     analysis: Mapped["Analysis"] = relationship(back_populates="events")
+    evidence_items: Mapped[list["Evidence"]] = relationship(
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )

@@ -23,6 +23,7 @@ import {
   type EventSeverity,
 } from '../../services/analysisService'
 import { getAuthErrorMessage } from '../../services/authService'
+import { PdfDownloadButton } from './PdfDownloadButton'
 
 type FilterValue = 'all' | EventCategory
 
@@ -312,7 +313,9 @@ export function EventDiscoverySection({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-start gap-2.5">
+          <PdfDownloadButton analysisId={analysisId} />
+
           {showTimelineLink && (
             <Link
               to={`/dashboard/timeline?analysisId=${analysisId}`}
@@ -322,6 +325,14 @@ export function EventDiscoverySection({
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
           )}
+
+          <Link
+            to={`/dashboard/evidence?analysisId=${analysisId}`}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-semibold text-[#111827] transition-colors hover:border-[#7C3AED]/40 hover:bg-[#F5F8FC] hover:text-[#7C3AED]"
+          >
+            <span>Evidence Center</span>
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
 
           <button
             type="button"

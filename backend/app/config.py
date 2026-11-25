@@ -86,6 +86,22 @@ class Settings(BaseSettings):
         return resolved
 
     @property
+    def resolved_evidence_dir(self) -> Path:
+        """Resolve evidence storage path relative to the backend directory."""
+        raw_path = Path(self.evidence_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @property
+    def resolved_reports_dir(self) -> Path:
+        """Resolve PDF reports storage path relative to the backend directory."""
+        raw_path = Path(self.reports_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @property
     def resolved_weights_dir(self) -> Path:
         """Resolve directory used to store downloaded YOLO model weights."""
         weights_dir = (BACKEND_DIR / "weights").resolve()

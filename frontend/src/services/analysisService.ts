@@ -201,6 +201,34 @@ export interface EventDiscoveryResponse {
   events: EventRecordInfo[]
 }
 
+export type EvidenceType = 'original_frame' | 'annotated_detection' | 'annotated_tracking'
+
+export interface EvidenceItemInfo {
+  id: string
+  event_id: string
+  analysis_id: string
+  frame_number: number
+  timestamp_seconds: number
+  evidence_type: EvidenceType
+  image_url: string
+  description: string
+  event_title: string
+  event_category: string
+  event_severity: string
+  event_confidence: number
+  why_flagged: string
+  involved_track_ids: number[]
+  detection_count: number
+  detection_summary: string[]
+  created_at: string
+}
+
+export interface AnalysisEvidenceListResponse {
+  analysis_id: string
+  total_evidence: number
+  evidence: EvidenceItemInfo[]
+}
+
 export async function listUserAnalyses(): Promise<AnalysisListItem[]> {
   const response = await apiClient.get<AnalysisListItem[]>('/analysis')
   return response.data
@@ -265,4 +293,41 @@ export async function fetchExtractedFrameBlobUrl(
     responseType: 'blob',
   })
   return URL.createObjectURL(response.data)
+}
+
+export async function getAnalysisEvidence(
+  analysisId: string,
+): Promise<AnalysisEvidenceListResponse> {
+  const response = await apiClient.get<AnalysisEvidenceListResponse>(
+    `/analysis/${analysisId}/evidence`,
+  )
+  return response.data
+}
+
+export async function getEventEvidence(eventId: string): Promise<AnalysisEvidenceListResponse> {
+  const response = await apiClient.get<AnalysisEvidenceListResponse>(
+    `/events/${eventId}/evidence`,
+  )
+  return response.data
+}
+
+export async function fetchEvidenceImageBlobUrl(evidenceId: string): Promise<string> {
+  const response = await apiClient.get<Blob>(`/evidence/${evidenceId}/image`, {
+    responseType: 'blob',
+  })
+  return URL.createObjectURL(response.data)
+}
+
+export async function downloadAnalysisPdfReport(analysisId: string): Promise<void> {
+  const response = await apiClient.get<Blob>(`/reports/${analysisId}/pdf`, {
+    responseType: 'blob',
+  })
+  const blobUrl = URL.createObjectURL(response.data)
+  const link = document.createElement('a')
+  link.href = blobUrl
+  link.download = `nemesis-x-report-${analysisId.slice(0, 8)}.pdf`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000)
 }
