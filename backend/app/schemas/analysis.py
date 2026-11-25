@@ -81,10 +81,23 @@ class TrackTimelinePointInfo(BaseModel):
     bbox: BoundingBoxInfo
 
 
+class TrackPositionSnapshot(BaseModel):
+    """Last known or observation pixel and normalized position for a track."""
+
+    frame_index: int
+    timestamp_seconds: float
+    center_x: float
+    center_y: float
+    norm_x: float | None = None
+    norm_y: float | None = None
+    bbox: BoundingBoxInfo
+
+
 class TrackSummaryInfo(BaseModel):
     """Persistent object track and temporal memory metadata."""
 
     track_id: int
+    track_code: str | None = None
     class_id: int
     class_name: str
     first_seen_frame: int
@@ -95,7 +108,98 @@ class TrackSummaryInfo(BaseModel):
     frame_count: int
     avg_confidence: float
     max_confidence: float
+    last_known_position: TrackPositionSnapshot | None = None
     timeline_points: list[TrackTimelinePointInfo] = Field(default_factory=list)
+
+
+class TrackMovementStep(BaseModel):
+    """Observed position change between two consecutive track observations."""
+
+    from_frame_index: int
+    to_frame_index: int
+    from_timestamp: float
+    to_timestamp: float
+    from_center_x: float
+    from_center_y: float
+    to_center_x: float
+    to_center_y: float
+    delta_x: float
+    delta_y: float
+    displacement_px: float
+    displacement_norm: float | None = None
+    direction: str
+
+
+class TrackMovementHistory(BaseModel):
+    """Aggregated trajectory distance and step-by-step movement history."""
+
+    total_path_distance_px: float
+    net_displacement_px: float
+    net_displacement_norm: float | None = None
+    dominant_direction: str
+    steps: list[TrackMovementStep] = Field(default_factory=list)
+
+
+class TrackRelatedEventInfo(BaseModel):
+    """Discovered event record linked to a specific track."""
+
+    id: str
+    event_type: str
+    category: str
+    title: str
+    description: str
+    start_timestamp: float
+    end_timestamp: float
+    severity: str
+    confidence: float
+    involved_track_ids: list[int] = Field(default_factory=list)
+
+
+class TrackObservationFrameInfo(BaseModel):
+    """Annotated frame metadata where the selected track was observed."""
+
+    frame_index: int
+    source_frame_index: int
+    timestamp_seconds: float
+    filename: str
+    frame_url: str
+    frame_available: bool
+    frame_width: int | None = None
+    frame_height: int | None = None
+    selected_detection: DetectedObjectInfo
+    center_x: float
+    center_y: float
+    position_delta_x: float = 0.0
+    position_delta_y: float = 0.0
+    other_detections: list[DetectedObjectInfo] = Field(default_factory=list)
+
+
+class TrackDetailResponse(BaseModel):
+    """Detailed movement, position, event, and frame inspection payload for one track."""
+
+    analysis_id: str
+    video_id: str
+    track_code: str
+    temporary_id_notice: str
+    frame_width: int | None = None
+    frame_height: int | None = None
+    track: TrackSummaryInfo
+    last_known_position: TrackPositionSnapshot | None = None
+    movement_history: TrackMovementHistory
+    related_events: list[TrackRelatedEventInfo] = Field(default_factory=list)
+    frames: list[TrackObservationFrameInfo] = Field(default_factory=list)
+
+
+class TrackFramesResponse(BaseModel):
+    """Annotated observation frames containing a specific track ID."""
+
+    analysis_id: str
+    video_id: str
+    track_id: int
+    track_code: str
+    class_name: str
+    total_observations: int
+    frames: list[TrackObservationFrameInfo] = Field(default_factory=list)
 
 
 class AnalysisResultsResponse(BaseModel):

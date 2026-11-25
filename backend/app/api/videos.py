@@ -1,10 +1,11 @@
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.config import BACKEND_DIR
+from app.config import BACKEND_DIR, get_settings
 from app.core.security import get_current_user
 from app.database import get_db
 from app.models.user import User
@@ -95,6 +96,43 @@ def get_video(
             detail="Video not found.",
         )
     return VideoResponse.model_validate(video)
+
+
+@router.get(
+    "/{video_id}/stream",
+    summary="Stream or download an uploaded video owned by the current user",
+)
+def stream_owned_video(
+    video_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Serve an uploaded video file strictly within the configured uploads directory."""
+    video = (
+        db.query(Video)
+        .filter(Video.id == video_id, Video.user_id == current_user.id)
+        .first()
+    )
+    if video is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Video not found.",
+        )
+
+    upload_dir = get_settings().resolved_upload_dir.resolve()
+    safe_name = Path(video.stored_filename).name
+    target_path = (upload_dir / safe_name).resolve()
+    if target_path.parent != upload_dir or not target_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Uploaded video file not found on disk.",
+        )
+
+    return FileResponse(
+        path=target_path,
+        media_type=video.mime_type or "video/mp4",
+        filename=video.original_filename,
+    )
 
 
 @router.delete(

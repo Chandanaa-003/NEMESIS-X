@@ -3,6 +3,7 @@ import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { EventDiscoverySection } from '../components/analysis/EventDiscoverySection'
+import { TrackExplorerSection } from '../components/analysis/TrackExplorerSection'
 import { listUserAnalyses, type AnalysisListItem } from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
 
@@ -128,7 +129,12 @@ export function EventTimelinePage() {
           </Link>
         </div>
       ) : (
-        selectedId && <EventDiscoverySection analysisId={selectedId} />
+        selectedId && (
+          <div className="space-y-6">
+            <TrackExplorerSection key={selectedId} analysisId={selectedId} />
+            <EventDiscoverySection analysisId={selectedId} />
+          </div>
+        )
       )}
     </div>
   )

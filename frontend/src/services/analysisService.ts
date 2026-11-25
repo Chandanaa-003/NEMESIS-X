@@ -70,8 +70,19 @@ export interface TrackTimelinePointInfo {
   bbox: BoundingBoxInfo
 }
 
+export interface TrackPositionSnapshot {
+  frame_index: number
+  timestamp_seconds: number
+  center_x: number
+  center_y: number
+  norm_x?: number | null
+  norm_y?: number | null
+  bbox: BoundingBoxInfo
+}
+
 export interface TrackSummaryInfo {
   track_id: number
+  track_code?: string | null
   class_id: number
   class_name: string
   first_seen_frame: number
@@ -82,7 +93,86 @@ export interface TrackSummaryInfo {
   frame_count: number
   avg_confidence: number
   max_confidence: number
+  last_known_position?: TrackPositionSnapshot | null
   timeline_points: TrackTimelinePointInfo[]
+}
+
+export interface TrackMovementStep {
+  from_frame_index: number
+  to_frame_index: number
+  from_timestamp: number
+  to_timestamp: number
+  from_center_x: number
+  from_center_y: number
+  to_center_x: number
+  to_center_y: number
+  delta_x: number
+  delta_y: number
+  displacement_px: number
+  displacement_norm?: number | null
+  direction: string
+}
+
+export interface TrackMovementHistory {
+  total_path_distance_px: number
+  net_displacement_px: number
+  net_displacement_norm?: number | null
+  dominant_direction: string
+  steps: TrackMovementStep[]
+}
+
+export interface TrackRelatedEventInfo {
+  id: string
+  event_type: string
+  category: string
+  title: string
+  description: string
+  start_timestamp: number
+  end_timestamp: number
+  severity: string
+  confidence: number
+  involved_track_ids: number[]
+}
+
+export interface TrackObservationFrameInfo {
+  frame_index: number
+  source_frame_index: number
+  timestamp_seconds: number
+  filename: string
+  frame_url: string
+  frame_available: boolean
+  frame_width?: number | null
+  frame_height?: number | null
+  selected_detection: DetectedObjectInfo
+  center_x: number
+  center_y: number
+  position_delta_x: number
+  position_delta_y: number
+  other_detections: DetectedObjectInfo[]
+}
+
+export interface TrackDetailResponse {
+  analysis_id: string
+  video_id: string
+  track_code: string
+  temporary_id_notice: string
+  frame_width?: number | null
+  frame_height?: number | null
+  track: TrackSummaryInfo
+  last_known_position?: TrackPositionSnapshot | null
+  movement_history: TrackMovementHistory
+  related_events: TrackRelatedEventInfo[]
+  frames: TrackObservationFrameInfo[]
+}
+
+export interface TrackFramesResponse {
+  analysis_id: string
+  video_id: string
+  track_id: number
+  track_code: string
+  class_name: string
+  total_observations: number
+  frames: TrackObservationFrameInfo[]
 }
 
 export interface AnalysisSummary {
@@ -258,6 +348,26 @@ export async function getAnalysisResults(analysisId: string): Promise<AnalysisRe
 
 export async function getAnalysisTracks(analysisId: string): Promise<AnalysisTracksResponse> {
   const response = await apiClient.get<AnalysisTracksResponse>(`/analysis/${analysisId}/tracks`)
+  return response.data
+}
+
+export async function getAnalysisTrackDetail(
+  analysisId: string,
+  trackId: number,
+): Promise<TrackDetailResponse> {
+  const response = await apiClient.get<TrackDetailResponse>(
+    `/analysis/${analysisId}/tracks/${trackId}`,
+  )
+  return response.data
+}
+
+export async function getAnalysisTrackFrames(
+  analysisId: string,
+  trackId: number,
+): Promise<TrackFramesResponse> {
+  const response = await apiClient.get<TrackFramesResponse>(
+    `/analysis/${analysisId}/tracks/${trackId}/frames`,
+  )
   return response.data
 }
 

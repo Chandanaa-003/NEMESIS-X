@@ -46,3 +46,11 @@ export async function listUserVideos(): Promise<VideoRecord[]> {
   const response = await apiClient.get<VideoRecord[]>('/videos')
   return response.data
 }
+
+export async function fetchVideoBlobUrl(videoId: string): Promise<string> {
+  const response = await apiClient.get<Blob>(`/videos/${videoId}/stream`, {
+    responseType: 'blob',
+    timeout: 60000,
+  })
+  return URL.createObjectURL(response.data)
+}

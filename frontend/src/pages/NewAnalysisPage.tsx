@@ -18,6 +18,7 @@ import {
 } from '../components/analysis/AnalysisConfigForm'
 import { EventDiscoverySection } from '../components/analysis/EventDiscoverySection'
 import { ExtractedFramesGallery } from '../components/analysis/ExtractedFramesGallery'
+import { TrackExplorerSection } from '../components/analysis/TrackExplorerSection'
 import { VideoUploadDropzone } from '../components/analysis/VideoUploadDropzone'
 import {
   getAnalysisResults,
@@ -485,9 +486,15 @@ export function NewAnalysisPage() {
         </motion.section>
       </form>
 
-      {/* Extracted Frames Gallery & Event Discovery after completion */}
+      {/* Extracted Frames Gallery, Track Explorer & Event Discovery after completion */}
       {analysisResults && analysisResults.status === 'completed' && (
         <>
+          <TrackExplorerSection
+            key={analysisResults.analysis_id}
+            analysisId={analysisResults.analysis_id}
+            videoId={analysisResults.video_id}
+            localVideoFile={selectedFile}
+          />
           <EventDiscoverySection
             analysisId={analysisResults.analysis_id}
             showTimelineLink

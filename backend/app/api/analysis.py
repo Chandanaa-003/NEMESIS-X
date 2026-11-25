@@ -25,8 +25,15 @@ from app.schemas.analysis import (
     BoundingBoxInfo,
     DetectedObjectInfo,
     ExtractedFrameInfo,
+    TrackDetailResponse,
+    TrackFramesResponse,
     TrackSummaryInfo,
     TrackTimelinePointInfo,
+)
+from app.services.track_explorer import (
+    get_track_detail_payload,
+    get_track_frames_payload,
+    load_enriched_tracks_data,
 )
 from app.workers.analysis_worker import run_video_analysis_job
 
@@ -365,7 +372,7 @@ def get_analysis_results(
 
         api_prefix = settings.api_v1_prefix
         detections_summary, detections_by_file = _load_detections_data(analysis.id, api_prefix)
-        tracks_summary, tracks = _load_tracks_data(analysis.id)
+        tracks_summary, tracks = load_enriched_tracks_data(analysis.id, db=db)
 
         for item in raw_meta.get("frames", []):
             filename = str(item.get("filename", ""))
@@ -450,7 +457,7 @@ def get_analysis_tracks(
 ) -> AnalysisTracksResponse:
     """Return persistent ByteTrack object trajectories and temporal spans."""
     analysis = _get_owned_analysis(analysis_id, current_user.id, db)
-    tracks_summary, tracks = _load_tracks_data(analysis.id)
+    tracks_summary, tracks = load_enriched_tracks_data(analysis.id, db=db)
 
     return AnalysisTracksResponse(
         analysis_id=analysis.id,
@@ -458,6 +465,50 @@ def get_analysis_tracks(
         status=analysis.status,  # type: ignore[arg-type]
         summary=tracks_summary,
         tracks=tracks,
+    )
+
+
+@router.get(
+    "/{analysis_id}/tracks/{track_id}",
+    response_model=TrackDetailResponse,
+    summary="Get detailed trajectory, position history, frames, and related events for one track",
+)
+def get_analysis_track_detail(
+    analysis_id: str,
+    track_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackDetailResponse:
+    """Return movement history, last known position, annotated frames, and events for a track."""
+    settings = get_settings()
+    analysis = _get_owned_analysis(analysis_id, current_user.id, db)
+    return get_track_detail_payload(
+        analysis=analysis,
+        track_id=track_id,
+        db=db,
+        api_prefix=settings.api_v1_prefix,
+    )
+
+
+@router.get(
+    "/{analysis_id}/tracks/{track_id}/frames",
+    response_model=TrackFramesResponse,
+    summary="Get all available observation frames containing a specific tracking ID",
+)
+def get_analysis_track_frames(
+    analysis_id: str,
+    track_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TrackFramesResponse:
+    """Return chronologically ordered annotated frames containing the selected tracking ID."""
+    settings = get_settings()
+    analysis = _get_owned_analysis(analysis_id, current_user.id, db)
+    return get_track_frames_payload(
+        analysis=analysis,
+        track_id=track_id,
+        db=db,
+        api_prefix=settings.api_v1_prefix,
     )
 
 
