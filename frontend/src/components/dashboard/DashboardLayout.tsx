@@ -5,6 +5,7 @@ import { Sidebar } from './Sidebar'
 
 const ROUTE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
+  '/analysis/new': 'New Analysis',
   '/dashboard/new-analysis': 'New Analysis',
   '/dashboard/live': 'Live Monitoring',
   '/dashboard/timeline': 'Event Timeline',

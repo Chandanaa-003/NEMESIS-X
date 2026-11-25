@@ -171,7 +171,7 @@ export const DEMO_QUICK_ACTIONS: DemoQuickActionItem[] = [
     id: 'qa-upload',
     title: 'Analyze Recorded Video',
     description: 'Upload MP4 or surveillance clips for multi-stage intelligence.',
-    to: '/dashboard/new-analysis',
+    to: '/analysis/new',
     accent: 'blue',
     iconKey: 'upload',
   },

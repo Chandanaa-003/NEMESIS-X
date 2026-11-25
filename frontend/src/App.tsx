@@ -1,12 +1,13 @@
 import { MotionConfig } from 'motion/react'
 import { useEffect } from 'react'
-import { BrowserRouter, Outlet, Route, Routes, useLocation } from 'react-router-dom'
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { Navbar } from './components/Navbar'
 import { DashboardLayout } from './components/dashboard/DashboardLayout'
 import { DashboardPage } from './pages/DashboardPage'
 import { DashboardSectionPage } from './pages/DashboardSectionPage'
 import { HomePage } from './pages/HomePage'
 import { LoginPage } from './pages/LoginPage'
+import { NewAnalysisPage } from './pages/NewAnalysisPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
 
@@ -51,33 +52,28 @@ export function App() {
             <Route path="/register" element={<RegisterPage />} />
           </Route>
 
-          {/* Dashboard workspace routes */}
-          <Route path="/dashboard" element={<DashboardLayout />}>
-            <Route index element={<DashboardPage />} />
+          {/* Dashboard & Analysis workspace routes */}
+          <Route element={<DashboardLayout />}>
+            <Route path="/analysis/new" element={<NewAnalysisPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route
-              path="new-analysis"
-              element={
-                <DashboardSectionPage
-                  title="New Analysis"
-                  routePath="/dashboard/new-analysis"
-                  iconKey="upload"
-                  description="Video upload and analysis configuration workspace placeholder. Backend ingestion and AI pipeline endpoints will connect here in an upcoming chunk."
-                />
-              }
+              path="/dashboard/new-analysis"
+              element={<Navigate to="/analysis/new" replace />}
             />
             <Route
-              path="live"
+              path="/dashboard/live"
               element={
                 <DashboardSectionPage
                   title="Live Monitoring"
                   routePath="/dashboard/live"
                   iconKey="live"
-                  description="Real-time stream monitoring and bilingual alert workspace placeholder. Live camera feeds and WebSocket alerts will connect in a later chunk."
+                  badgeText="COMING SOON"
+                  description="Coming Soon — Real-time webcam and camera stream monitoring with instant English & Kannada alerts will be available in an upcoming development stage."
                 />
               }
             />
             <Route
-              path="timeline"
+              path="/dashboard/timeline"
               element={
                 <DashboardSectionPage
                   title="Event Timeline"
@@ -88,7 +84,7 @@ export function App() {
               }
             />
             <Route
-              path="evidence"
+              path="/dashboard/evidence"
               element={
                 <DashboardSectionPage
                   title="Evidence Center"
@@ -99,7 +95,7 @@ export function App() {
               }
             />
             <Route
-              path="history"
+              path="/dashboard/history"
               element={
                 <DashboardSectionPage
                   title="Analysis History"
@@ -110,7 +106,7 @@ export function App() {
               }
             />
             <Route
-              path="settings"
+              path="/dashboard/settings"
               element={
                 <DashboardSectionPage
                   title="Settings"

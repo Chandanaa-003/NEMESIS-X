@@ -22,7 +22,7 @@ interface SidebarNavItem {
 
 const DASHBOARD_NAV_ITEMS: SidebarNavItem[] = [
   { label: 'Dashboard', to: '/dashboard', end: true, icon: LayoutDashboard },
-  { label: 'New Analysis', to: '/dashboard/new-analysis', icon: UploadCloud },
+  { label: 'New Analysis', to: '/analysis/new', icon: UploadCloud },
   { label: 'Live Monitoring', to: '/dashboard/live', icon: Radio },
   { label: 'Event Timeline', to: '/dashboard/timeline', icon: Clock },
   { label: 'Evidence Center', to: '/dashboard/evidence', icon: ShieldCheck },

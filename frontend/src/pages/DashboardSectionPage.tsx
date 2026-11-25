@@ -27,6 +27,7 @@ interface DashboardSectionPageProps {
   routePath: string
   description: string
   iconKey: SectionIconKey
+  badgeText?: string
 }
 
 export function DashboardSectionPage({
@@ -34,6 +35,7 @@ export function DashboardSectionPage({
   routePath,
   description,
   iconKey,
+  badgeText = 'MODULE PLACEHOLDER',
 }: DashboardSectionPageProps) {
   const Icon = ICON_MAP[iconKey]
 
@@ -58,7 +60,7 @@ export function DashboardSectionPage({
         </div>
 
         <span className="rounded-full border border-slate-200 bg-[#F5F8FC] px-3 py-1 font-mono text-[11px] font-semibold text-[#64748B]">
-          MODULE PLACEHOLDER
+          {badgeText}
         </span>
       </div>
 

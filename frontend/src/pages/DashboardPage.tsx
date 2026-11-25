@@ -97,7 +97,7 @@ export function DashboardPage() {
 
           <div className="flex flex-wrap items-center gap-3">
             <Link
-              to="/dashboard/new-analysis"
+              to="/analysis/new"
               className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-md shadow-[#2563EB]/20 transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#2563EB]/25"
             >
               <UploadCloud className="h-4 w-4" />
