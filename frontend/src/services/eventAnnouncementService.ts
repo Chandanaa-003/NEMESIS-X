@@ -188,6 +188,41 @@ export function buildEventAnnouncementTexts(params: {
         englishText: `Notice. Multiple people were observed in the same area at ${enTs}.`,
         kannadaText: `ಸೂಚನೆ. ${knTs} ಒಂದೇ ಪ್ರದೇಶದಲ್ಲಿ ಹಲವರು ಕಂಡುಬಂದಿದ್ದಾರೆ.`,
       }
+    case 'possible_object_pickup':
+      return {
+        englishText: `Possible object pickup detected at ${enTs}. A person appears to move an object. Please review the evidence.`,
+        kannadaText: `ಸಂಭಾವ್ಯ ವಸ್ತು ಎತ್ತುವಿಕೆ ಪತ್ತೆಯಾಗಿದೆ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ವಸ್ತುವನ್ನು ತೆಗೆದುಕೊಂಡಿರುವಂತೆ ಕಾಣುತ್ತಿದೆ. ದಯವಿಟ್ಟು ಸಾಕ್ಷ್ಯವನ್ನು ಪರಿಶೀಲಿಸಿ.`,
+      }
+    case 'possible_object_placement':
+      return {
+        englishText: `Possible object placement detected at ${enTs}. A person separated from an object which remained stationary.`,
+        kannadaText: `ಸಂಭಾವ್ಯ ವಸ್ತು ಇರಿಸುವಿಕೆ ಪತ್ತೆಯಾಗಿದೆ. ${knTs} ಒಬ್ಬ ವ್ಯಕ್ತಿ ವಸ್ತುವನ್ನು ಬಿಟ್ಟು ದೂರ ಸರಿದಿದ್ದಾರೆ.`,
+      }
+    case 'multi_person_object_interaction':
+      return {
+        englishText: `Notice. Multiple people were observed interacting near the same object at ${enTs}.`,
+        kannadaText: `ಸೂಚನೆ. ${knTs} ಒಂದೇ ವಸ್ತುವಿನ ಹತ್ತಿರ ಹಲವರು ಕಂಡುಬಂದಿದ್ದಾರೆ.`,
+      }
+    case 'movement_anomaly':
+      return {
+        englishText: `Attention. Unusual movement pattern detected at ${enTs}. Please review the timeline.`,
+        kannadaText: `ಗಮನಿಸಿ. ${knTs} ಅಸಾಮಾನ್ಯ ಚಲನೆ ಪತ್ತೆಯಾಗಿದೆ. ದಯವಿಟ್ಟು ಪರಿಶೀಲಿಸಿ.`,
+      }
+    case 'restricted_zone_entry':
+      return {
+        englishText: `High alert. Restricted zone entry detected at ${enTs}. Please review immediately.`,
+        kannadaText: `ತುರ್ತು ಎಚ್ಚರಿಕೆ. ${knTs} ನಿರ್ಬಂಧಿತ ಪ್ರದೇಶಕ್ಕೆ ಪ್ರವೇಶ ಪತ್ತೆಯಾಗಿದೆ. ದಯವಿಟ್ಟು ತಕ್ಷಣ ಪರಿಶೀಲಿಸಿ.`,
+      }
+    case 'object_movement_without_person':
+      return {
+        englishText: `Notice. An object moved without a clearly associated person at ${enTs}.`,
+        kannadaText: `ಸೂಚನೆ. ${knTs} ವ್ಯಕ್ತಿಯಿಲ್ಲದೆ ವಸ್ತುವಿನ ಚಲನೆ ಪತ್ತೆಯಾಗಿದೆ.`,
+      }
+    case 'after_hours_activity':
+      return {
+        englishText: `High alert. Activity detected outside configured operating hours at ${enTs}.`,
+        kannadaText: `ತುರ್ತು ಎಚ್ಚರಿಕೆ. ${knTs} ನಿಗದಿತ ಸಮಯದ ಹೊರಗೆ ಚಟುವಟಿಕೆ ಪತ್ತೆಯಾಗಿದೆ.`,
+      }
     default:
       return {
         englishText: `Event alert detected at ${enTs}. Please review the timeline.`,

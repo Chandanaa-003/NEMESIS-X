@@ -3,8 +3,16 @@ import { motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { EventDiscoverySection } from '../components/analysis/EventDiscoverySection'
+import { InteractionIntelligenceSection } from '../components/analysis/InteractionIntelligenceSection'
 import { TrackExplorerSection } from '../components/analysis/TrackExplorerSection'
-import { listUserAnalyses, type AnalysisListItem } from '../services/analysisService'
+import {
+  getAnalysisEvents,
+  getAnalysisTracks,
+  listUserAnalyses,
+  type AnalysisListItem,
+  type EventRecordInfo,
+  type TrackSummaryInfo,
+} from '../services/analysisService'
 import { getAuthErrorMessage } from '../services/authService'
 
 export function EventTimelinePage() {
@@ -13,6 +21,8 @@ export function EventTimelinePage() {
 
   const [analyses, setAnalyses] = useState<AnalysisListItem[]>([])
   const [selectedId, setSelectedId] = useState<string>(requestedId || '')
+  const [tracks, setTracks] = useState<TrackSummaryInfo[]>([])
+  const [events, setEvents] = useState<EventRecordInfo[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -46,6 +56,22 @@ export function EventTimelinePage() {
       cancelled = true
     }
   }, [requestedId])
+
+  useEffect(() => {
+    if (!selectedId) return
+    let cancelled = false
+    Promise.all([
+      getAnalysisTracks(selectedId).catch(() => null),
+      getAnalysisEvents(selectedId).catch(() => null),
+    ]).then(([tRes, eRes]) => {
+      if (cancelled) return
+      setTracks(tRes?.tracks ?? [])
+      setEvents(eRes?.events ?? [])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedId])
 
   const handleSelectAnalysis = (nextId: string) => {
     setSelectedId(nextId)
@@ -131,6 +157,11 @@ export function EventTimelinePage() {
       ) : (
         selectedId && (
           <div className="space-y-6">
+            <InteractionIntelligenceSection
+              analysisId={selectedId}
+              tracks={tracks}
+              events={events}
+            />
             <TrackExplorerSection key={selectedId} analysisId={selectedId} />
             <EventDiscoverySection analysisId={selectedId} />
           </div>

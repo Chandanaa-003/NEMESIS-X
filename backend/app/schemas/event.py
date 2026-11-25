@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,10 @@ class EventExplanation(BaseModel):
     evidence_timestamps: list[float]
     confidence_note: str
     requires_human_review: bool
+    person_track_id: int | None = None
+    object_track_id: int | None = None
+    association_uncertainty: str | None = None
+    anomaly_score: dict[str, Any] | None = None
 
 
 class EventRecordInfo(BaseModel):

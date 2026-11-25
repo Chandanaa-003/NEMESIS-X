@@ -51,11 +51,15 @@ class IntelligenceAnalyticsResponse(BaseModel):
     total_sessions: int = 0
     recorded_sessions_count: int = 0
     live_sessions_count: int = 0
+    completed_analyses_count: int = 0
+    failed_analyses_count: int = 0
     total_duration_seconds: float = 0.0
+    avg_processing_duration_seconds: float = 0.0
     total_frames_processed: int = 0
     total_detections: int = 0
     total_unique_tracks: int = 0
     total_events: int = 0
+    anomaly_events: int = 0
     high_priority_events: int = 0
     medium_priority_events: int = 0
     low_priority_events: int = 0

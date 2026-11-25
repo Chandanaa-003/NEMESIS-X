@@ -1,12 +1,15 @@
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
 import uuid
 
+from app.services.anomaly_engine import analyze_anomalies
 from app.services.interaction_engine import (
     InteractionConfig,
+    SessionTemporalMemory,
     analyze_track_interactions,
 )
 
@@ -75,6 +78,8 @@ def discover_events_from_data(
     frame_height: int,
     config: InteractionConfig | None = None,
     exit_grace_frames: int = 0,
+    memory: SessionTemporalMemory | None = None,
+    session_timestamp_utc: datetime | None = None,
 ) -> list[DiscoveredEventDraft]:
     """Run rule-based event discovery in-memory over normalized tracks and timestamps.
 
@@ -91,6 +96,7 @@ def discover_events_from_data(
         frame_height=frame_height,
         all_frame_indices=all_frame_indices,
         config=cfg,
+        memory=memory,
     )
 
     discovered: list[DiscoveredEventDraft] = []
@@ -112,11 +118,34 @@ def discover_events_from_data(
         observed_sequence: list[str],
         why_flagged: str,
         requires_human_review: bool,
+        person_track_id: int | None = None,
+        object_track_id: int | None = None,
+        association_uncertainty: str | None = None,
+        anomaly_score: dict[str, Any] | None = None,
     ) -> DiscoveredEventDraft:
         selected_frames = _select_evidence_frames(frame_ids)
         evidence_timestamps = [
             round(frame_ts_map.get(fid, start_ts), 3) for fid in selected_frames
         ]
+        payload: dict[str, Any] = {
+            "observed_sequence": observed_sequence,
+            "why_flagged": why_flagged,
+            "evidence_timestamps": evidence_timestamps,
+            "confidence_note": (
+                "Combined rule-based temporal confidence and YOLO/ByteTrack observation "
+                "confidence. Visual inference only; human verification recommended."
+            ),
+            "requires_human_review": requires_human_review,
+        }
+        if person_track_id is not None:
+            payload["person_track_id"] = person_track_id
+        if object_track_id is not None:
+            payload["object_track_id"] = object_track_id
+        if association_uncertainty is not None:
+            payload["association_uncertainty"] = association_uncertainty
+        if anomaly_score is not None:
+            payload["anomaly_score"] = anomaly_score
+
         return DiscoveredEventDraft(
             id=str(uuid.uuid4()),
             event_type=event_type,
@@ -129,16 +158,7 @@ def discover_events_from_data(
             confidence=_clamp_confidence(confidence),
             severity=severity,
             evidence_frame_ids=selected_frames,
-            explanation_payload={
-                "observed_sequence": observed_sequence,
-                "why_flagged": why_flagged,
-                "evidence_timestamps": evidence_timestamps,
-                "confidence_note": (
-                    "Combined rule-based temporal confidence and YOLO/ByteTrack observation "
-                    "confidence. Visual inference only; human verification recommended."
-                ),
-                "requires_human_review": requires_human_review,
-            },
+            explanation_payload=payload,
         )
 
     # Rules 1, 2, 6, 7: Single-track entry, exit, disappearance, extended stationary state
@@ -496,7 +516,192 @@ def discover_events_from_data(
             )
         )
 
+    # Rule 10: Possible Object Pickup & Possible Object Placement
+    multi_assoc_by_obj = {m.object_track_id: m for m in interactions.multi_person_object_associations}
+    for inter in interactions.person_object_interactions:
+        p_code = f"P{inter.person_track_id:03d}"
+        o_code = f"O{inter.object_track_id:03d}"
+        p_prof = interactions.track_profiles[inter.person_track_id]
+        o_prof = interactions.track_profiles[inter.object_track_id]
+        obj_label = inter.object_class_name
+        pair_conf = (p_prof.avg_confidence + o_prof.avg_confidence) / 2.0
+
+        multi_info = multi_assoc_by_obj.get(inter.object_track_id)
+        uncertainty = "low"
+        if multi_info is not None:
+            uncertainty = multi_info.association_uncertainty
+            # Only attribute pickup to primary person if identified, or mark uncertain
+            if multi_info.primary_person_id is not None and multi_info.primary_person_id != inter.person_track_id:
+                continue
+
+        if inter.is_possible_pickup and inter.pickup_window is not None:
+            f_s, f_e, ts_s, ts_e = inter.pickup_window
+            seq = [
+                f"Person {p_code} approached {obj_label} {o_code} around {_fmt_hms(ts_s)}.",
+                f"Possible interaction observed at {_fmt_hms(inter.min_distance_timestamp)} (min distance {inter.min_distance_norm:.2f}).",
+                f"{obj_label.capitalize()} {o_code} displaced by {inter.object_displacement_norm:.2f} normalized units.",
+                f"{obj_label.capitalize()} {o_code} moved consistently with {p_code} across {len(inter.co_movement_frames)} frames (score {inter.co_movement_score:.2f}).",
+            ]
+            discovered.append(
+                build_event(
+                    event_type="possible_object_pickup",
+                    category="object_interactions",
+                    title=f"Possible pickup: {p_code} & {obj_label} {o_code}",
+                    description=(
+                        f"Possible pickup: {p_code} appears to interact with and move {obj_label} {o_code} "
+                        f"between {_fmt_hms(ts_s)} and {_fmt_hms(ts_e)}."
+                    ),
+                    start_ts=ts_s,
+                    end_ts=ts_e,
+                    track_ids=[inter.person_track_id, inter.object_track_id],
+                    confidence=pair_conf * (0.75 + 0.2 * inter.co_movement_score),
+                    severity="high",
+                    frame_ids=[f_s, inter.min_distance_frame, f_e] + inter.co_movement_frames[:2],
+                    observed_sequence=seq,
+                    why_flagged=(
+                        "Object pickup heuristic triggered: person approached object, followed by object "
+                        "displacement aligned with person trajectory."
+                    ),
+                    requires_human_review=True,
+                    person_track_id=inter.person_track_id,
+                    object_track_id=inter.object_track_id,
+                    association_uncertainty=uncertainty,
+                )
+            )
+
+        if inter.is_possible_placement and inter.placement_window is not None:
+            f_s, f_e, ts_s, ts_e = inter.placement_window
+            seq = [
+                f"Person {p_code} and {obj_label} {o_code} co-located at {_fmt_hms(ts_s)}.",
+                f"Person {p_code} separated from {obj_label} {o_code}.",
+                f"{obj_label.capitalize()} {o_code} remained stationary until {_fmt_hms(ts_e)}.",
+            ]
+            discovered.append(
+                build_event(
+                    event_type="possible_object_placement",
+                    category="object_interactions",
+                    title=f"Possible placement: {p_code} & {obj_label} {o_code}",
+                    description=(
+                        f"Possible object placement: {p_code} separated from {obj_label} {o_code}, "
+                        f"which remained stationary from {_fmt_hms(ts_s)} to {_fmt_hms(ts_e)}."
+                    ),
+                    start_ts=ts_s,
+                    end_ts=ts_e,
+                    track_ids=[inter.person_track_id, inter.object_track_id],
+                    confidence=pair_conf * 0.85,
+                    severity="medium",
+                    frame_ids=[f_s, f_e],
+                    observed_sequence=seq,
+                    why_flagged=(
+                        "Object placement heuristic triggered: object remained stationary after nearby person departed."
+                    ),
+                    requires_human_review=False,
+                    person_track_id=inter.person_track_id,
+                    object_track_id=inter.object_track_id,
+                    association_uncertainty=uncertainty,
+                )
+            )
+
+    # Rule 11: Multi-person object association
+    for ma in interactions.multi_person_object_associations:
+        o_code = f"O{ma.object_track_id:03d}"
+        cand_codes = [f"P{p:03d}" for p in ma.candidate_person_ids]
+        discovered.append(
+            build_event(
+                event_type="multi_person_object_interaction",
+                category="object_interactions",
+                title=f"Multiple people near {ma.object_class_name} {o_code}",
+                description=ma.reason,
+                start_ts=ma.start_timestamp,
+                end_ts=ma.end_timestamp,
+                track_ids=ma.candidate_person_ids + [ma.object_track_id],
+                confidence=0.80 if ma.association_uncertainty != "high" else 0.60,
+                severity="medium",
+                frame_ids=ma.frame_ids,
+                observed_sequence=[
+                    f"Candidates {', '.join(cand_codes)} entered proximity of {ma.object_class_name} {o_code}.",
+                    ma.reason,
+                ],
+                why_flagged=(
+                    "Multi-person object association rule triggered: multiple distinct person tracks approached the same object."
+                ),
+                requires_human_review=ma.association_uncertainty == "high",
+                person_track_id=ma.primary_person_id,
+                object_track_id=ma.object_track_id,
+                association_uncertainty=ma.association_uncertainty,
+            )
+        )
+
+    # Rule 12: Occlusion & Track ID Switching awareness
+    for sw in interactions.possible_id_switches:
+        discovered.append(
+            build_event(
+                event_type="occlusion_id_switch",
+                category="other_activities",
+                title=f"Possible occlusion/ID switch ({sw.class_name} T{sw.prev_track_id:03d} → T{sw.next_track_id:03d})",
+                description=(
+                    f"Track T{sw.prev_track_id:03d} ({sw.class_name}) ended at {_fmt_hms(sw.prev_end_timestamp)} and "
+                    f"T{sw.next_track_id:03d} appeared {sw.gap_frames} frame(s) later within {sw.spatial_distance_norm:.2f} norm distance."
+                ),
+                start_ts=sw.prev_end_timestamp,
+                end_ts=sw.next_start_timestamp,
+                track_ids=[sw.prev_track_id, sw.next_track_id],
+                confidence=0.68,
+                severity="low",
+                frame_ids=[min_f, max_f],
+                observed_sequence=[
+                    f"Track T{sw.prev_track_id:03d} last seen at {_fmt_hms(sw.prev_end_timestamp)}.",
+                    f"Track T{sw.next_track_id:03d} appeared at {_fmt_hms(sw.next_start_timestamp)} nearby (dist {sw.spatial_distance_norm:.2f}).",
+                ],
+                why_flagged="Short temporal gap and spatial proximity suggest possible occlusion or tracker ID switch.",
+                requires_human_review=False,
+                association_uncertainty="high",
+            )
+        )
+
+    # Rule 13: Configurable Anomaly Engine + Explainable Scoring
+    anomalies = analyze_anomalies(
+        interactions=interactions,
+        config=cfg,
+        memory=memory,
+        session_timestamp_utc=session_timestamp_utc,
+    )
+    for anom in anomalies:
+        discovered.append(
+            build_event(
+                event_type=anom.event_type,
+                category=anom.category,
+                title=anom.title,
+                description=anom.description,
+                start_ts=anom.start_timestamp,
+                end_ts=anom.end_timestamp,
+                track_ids=anom.involved_track_ids,
+                confidence=anom.confidence,
+                severity=anom.severity,
+                frame_ids=anom.frame_ids,
+                observed_sequence=anom.observed_actions,
+                why_flagged=anom.inference_explanation,
+                requires_human_review=anom.requires_human_review,
+                person_track_id=anom.person_track_id,
+                object_track_id=anom.object_track_id,
+                association_uncertainty=anom.association_uncertainty,
+                anomaly_score=anom.score_breakdown.to_dict(),
+            )
+        )
+
     discovered.sort(key=lambda evt: (evt.start_timestamp, evt.end_timestamp, evt.event_type))
+
+    if memory is not None:
+        memory.previous_event_sequences = [
+            {
+                "event_type": e.event_type,
+                "start_timestamp": e.start_timestamp,
+                "end_timestamp": e.end_timestamp,
+                "track_ids": e.involved_track_ids,
+            }
+            for e in discovered
+        ]
+
     return discovered
 
 

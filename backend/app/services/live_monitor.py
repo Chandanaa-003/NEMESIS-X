@@ -29,6 +29,7 @@ from app.schemas.live import (
 )
 from app.services.detector import get_detection_model
 from app.services.event_engine import discover_events_from_data
+from app.services.interaction_engine import SessionTemporalMemory
 from app.services.track_explorer import format_track_code
 from app.services.tracker import TrackTimelinePoint, _TrackAccumulator
 
@@ -53,7 +54,12 @@ class _LiveSessionRuntime:
     frame_ts_map: dict[int, float] = field(default_factory=dict)
     track_map: dict[int, _TrackAccumulator] = field(default_factory=dict)
     emitted_event_keys: set[tuple[str, tuple[int, ...]]] = field(default_factory=set)
+    memory: SessionTemporalMemory | None = None
     session_lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def __post_init__(self) -> None:
+        if self.memory is None:
+            self.memory = SessionTemporalMemory(session_id=self.session_id)
 
 
 _active_live_sessions: dict[str, _LiveSessionRuntime] = {}
@@ -479,6 +485,7 @@ def process_live_frame(
             frame_width=frame_w,
             frame_height=frame_h,
             exit_grace_frames=1,
+            memory=runtime.memory,
         )
 
         detection_summary_lines = [

@@ -9,6 +9,7 @@ from app.api.live import router as live_router
 from app.api.monitoring import router as monitoring_router
 from app.api.reports import router as reports_router
 from app.api.settings import router as settings_router
+from app.api.tts import router as tts_router
 from app.api.videos import router as videos_router
 from app.config import get_settings
 
@@ -25,3 +26,4 @@ api_router.include_router(evidence_router)
 api_router.include_router(reports_router)
 api_router.include_router(live_router)
 api_router.include_router(monitoring_router)
+api_router.include_router(tts_router)

@@ -259,6 +259,8 @@ class MonitoringHistoryAndAnalyticsTests(unittest.TestCase):
         self.assertEqual(analytics["total_sessions"], 2)
         self.assertEqual(analytics["recorded_sessions_count"], 1)
         self.assertEqual(analytics["live_sessions_count"], 1)
+        self.assertEqual(analytics["completed_analyses_count"], 1)
+        self.assertEqual(analytics["failed_analyses_count"], 0)
         self.assertEqual(analytics["total_events"], 2)
         self.assertEqual(analytics["high_priority_events"], 1)
         self.assertEqual(analytics["medium_priority_events"], 1)
@@ -267,6 +269,37 @@ class MonitoringHistoryAndAnalyticsTests(unittest.TestCase):
         class_names = [c["class_name"] for c in analytics["top_object_classes"]]
         self.assertIn("person", class_names)
         self.assertTrue(len(analytics["timeline_trends"]) > 0)
+
+    def test_analytics_invalid_date_range(self) -> None:
+        res = self.client.get(
+            "/api/v1/monitoring/analytics?date_from=2026-12-31T00:00:00Z&date_to=2026-01-01T00:00:00Z",
+            headers=self.headers,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_analytics_user_isolation_and_empty_state(self) -> None:
+        db = self.SessionLocal()
+        try:
+            other = User(
+                full_name="Other Analyst",
+                email="other@nemesis-x.test",
+                hashed_password=hash_password("Password123!"),
+            )
+            db.add(other)
+            db.commit()
+            db.refresh(other)
+            other_headers = {"Authorization": f"Bearer {create_access_token(str(other.id))}"}
+        finally:
+            db.close()
+
+        res = self.client.get("/api/v1/monitoring/analytics", headers=other_headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["total_sessions"], 0)
+        self.assertEqual(data["recorded_sessions_count"], 0)
+        self.assertEqual(data["live_sessions_count"], 0)
+        self.assertEqual(data["total_events"], 0)
+        self.assertEqual(data["avg_processing_duration_seconds"], 0.0)
 
     def test_unified_session_detail_recorded(self) -> None:
         res = self.client.get(

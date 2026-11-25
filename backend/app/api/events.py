@@ -123,6 +123,10 @@ def _to_event_record(
             )
         ),
         requires_human_review=bool(payload.get("requires_human_review", False)),
+        person_track_id=payload.get("person_track_id"),
+        object_track_id=payload.get("object_track_id"),
+        association_uncertainty=payload.get("association_uncertainty"),
+        anomaly_score=payload.get("anomaly_score"),
     )
 
     category_val = event.category

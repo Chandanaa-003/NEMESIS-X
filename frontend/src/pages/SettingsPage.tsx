@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { motion } from 'motion/react'
 import { useEffect, useState, type FormEvent } from 'react'
+import { VoiceDiagnosticsPanel } from '../components/analysis/VoiceDiagnosticsPanel'
 import { setActiveVoiceSettings } from '../services/eventAnnouncementService'
 import { getAuthErrorMessage } from '../services/authService'
 import {
@@ -551,6 +552,8 @@ export function SettingsPage() {
           </div>
         </form>
       )}
+
+      <VoiceDiagnosticsPanel />
     </div>
   )
 }

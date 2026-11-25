@@ -295,6 +295,11 @@ def get_intelligence_analytics(
     for s in live_sessions:
         total_duration += _compute_live_duration(s)
 
+    total_sessions_count = len(analyses) + len(live_sessions)
+    avg_duration = round(total_duration / total_sessions_count, 2) if total_sessions_count > 0 else 0.0
+    completed_count = sum(1 for a in analyses if a.status == "completed")
+    failed_count = sum(1 for a in analyses if a.status == "failed")
+
     total_frames = sum(a.processed_frames for a in analyses) + sum(s.frames_processed for s in live_sessions)
 
     # Detections
@@ -411,15 +416,32 @@ def get_intelligence_analytics(
         for d in all_dates
     ]
 
+    ANOMALY_EVENT_TYPES = {
+        "movement_anomaly",
+        "prolonged_stationary_person",
+        "restricted_zone_entry",
+        "object_movement_without_person",
+        "after_hours_activity",
+        "possible_object_pickup",
+        "possible_unattended_object",
+    }
+    anomaly_count = sum(1 for e in rec_events if e.event_type in ANOMALY_EVENT_TYPES) + sum(
+        1 for le in live_events if le.event_type in ANOMALY_EVENT_TYPES
+    )
+
     return IntelligenceAnalyticsResponse(
-        total_sessions=len(analyses) + len(live_sessions),
+        total_sessions=total_sessions_count,
         recorded_sessions_count=len(analyses),
         live_sessions_count=len(live_sessions),
+        completed_analyses_count=completed_count,
+        failed_analyses_count=failed_count,
         total_duration_seconds=round(total_duration, 2),
+        avg_processing_duration_seconds=avg_duration,
         total_frames_processed=total_frames,
         total_detections=total_detections,
         total_unique_tracks=total_unique_tracks,
         total_events=total_events_count,
+        anomaly_events=anomaly_count,
         high_priority_events=high_pri,
         medium_priority_events=med_pri,
         low_priority_events=low_pri,

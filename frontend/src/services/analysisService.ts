@@ -248,6 +248,19 @@ export interface EventExplanation {
   evidence_timestamps: number[]
   confidence_note: string
   requires_human_review: boolean
+  person_track_id?: number | null
+  object_track_id?: number | null
+  association_uncertainty?: string | null
+  anomaly_score?: {
+    duration_score?: number
+    movement_change_score?: number
+    interaction_sequence_score?: number
+    track_association_confidence?: number
+    repeated_behavior_score?: number
+    zone_rule_score?: number
+    total_score?: number
+    explanation?: string
+  } | null
 }
 
 export interface EventRecordInfo {

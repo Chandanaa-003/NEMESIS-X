@@ -53,11 +53,15 @@ export interface IntelligenceAnalyticsResponse {
   total_sessions: number
   recorded_sessions_count: number
   live_sessions_count: number
+  completed_analyses_count: number
+  failed_analyses_count: number
   total_duration_seconds: number
+  avg_processing_duration_seconds: number
   total_frames_processed: number
   total_detections: number
   total_unique_tracks: number
   total_events: number
+  anomaly_events: number
   high_priority_events: number
   medium_priority_events: number
   low_priority_events: number

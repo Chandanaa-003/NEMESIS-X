@@ -77,7 +77,19 @@ export function IntelligenceAnalyticsDashboard() {
         setData(res)
       })
       .catch((err) => {
-        setErrorMsg(err.response?.data?.detail || 'Failed to fetch analytics metrics.')
+        const status = err.response?.status
+        const detail = err.response?.data?.detail
+        if (status === 404) {
+          setErrorMsg(
+            'The analytics API endpoint (/api/v1/monitoring/analytics) returned HTTP 404. Ensure the backend server has been restarted with the latest routes.',
+          )
+        } else if (status === 401) {
+          setErrorMsg('Your session has expired. Please sign in again to view analytics.')
+        } else if (!err.response) {
+          setErrorMsg('Unable to reach the NEMESIS-X backend API server. Check that the backend is running.')
+        } else {
+          setErrorMsg(detail || 'Failed to compute analytics metrics from the database.')
+        }
       })
       .finally(() => {
         setIsLoading(false)
@@ -160,9 +172,26 @@ export function IntelligenceAnalyticsDashboard() {
           <p className="text-xs font-semibold text-slate-500">Computing intelligence statistics from database records...</p>
         </div>
       ) : errorMsg ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-rose-700">
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center text-rose-700 space-y-3">
           <p className="font-bold text-sm">Failed to load analytics</p>
-          <p className="text-xs mt-1">{errorMsg}</p>
+          <p className="text-xs max-w-lg mx-auto">{errorMsg}</p>
+          <button
+            type="button"
+            onClick={loadData}
+            className="cursor-pointer inline-flex items-center gap-1.5 rounded-xl border border-rose-300 bg-white px-4 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>Retry</span>
+          </button>
+        </div>
+      ) : data && data.total_sessions === 0 ? (
+        <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-12 text-center">
+          <BarChart3 className="mx-auto h-9 w-9 text-slate-300" />
+          <p className="mt-3 text-sm font-bold text-slate-800">No Monitoring History Yet</p>
+          <p className="mt-1 text-xs text-slate-500 max-w-md mx-auto">
+            No recorded video analyses or live webcam sessions were found for this date range. Run an
+            analysis or start live monitoring to populate real intelligence metrics.
+          </p>
         </div>
       ) : data ? (
         <div className="space-y-6">
@@ -178,10 +207,18 @@ export function IntelligenceAnalyticsDashboard() {
               <p className="mt-2 font-display text-3xl font-extrabold text-[#111827]">
                 {data.total_sessions}
               </p>
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
                 <span className="font-medium text-blue-700">{data.recorded_sessions_count} Recorded</span>
                 <span>•</span>
-                <span className="font-medium text-rose-600">{data.live_sessions_count} Live Streams</span>
+                <span className="font-medium text-rose-600">{data.live_sessions_count} Live</span>
+                <span>•</span>
+                <span className="font-medium text-emerald-700">{data.completed_analyses_count} Done</span>
+                {data.failed_analyses_count > 0 && (
+                  <>
+                    <span>•</span>
+                    <span className="font-medium text-rose-700">{data.failed_analyses_count} Failed</span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -196,7 +233,7 @@ export function IntelligenceAnalyticsDashboard() {
                 {formatHoursMinutes(data.total_duration_seconds)}
               </p>
               <p className="mt-2 text-[11px] text-slate-500 font-mono">
-                {data.total_frames_processed.toLocaleString()} total frames processed
+                Avg {formatHoursMinutes(data.avg_processing_duration_seconds)} · {data.total_frames_processed.toLocaleString()} frames
               </p>
             </div>
 
@@ -211,14 +248,14 @@ export function IntelligenceAnalyticsDashboard() {
                 <p className="font-display text-3xl font-extrabold text-[#111827]">
                   {data.total_events}
                 </p>
-                {data.high_priority_events > 0 && (
+                {data.anomaly_events > 0 && (
                   <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-bold text-rose-700">
-                    {data.high_priority_events} High Threat
+                    {data.anomaly_events} Anomalies
                   </span>
                 )}
               </div>
               <p className="mt-2 text-[11px] text-slate-500">
-                {data.medium_priority_events} Medium · {data.low_priority_events} Low
+                {data.high_priority_events} High · {data.medium_priority_events} Med · {data.low_priority_events} Low
               </p>
             </div>
 

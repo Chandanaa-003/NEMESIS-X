@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -65,6 +65,11 @@ def get_monitoring_intelligence_analytics(
     db: Session = Depends(get_db),
 ) -> IntelligenceAnalyticsResponse:
     """Compute and return truthful aggregated intelligence metrics based strictly on database records."""
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid date range: date_from must be before or equal to date_to.",
+        )
     return get_intelligence_analytics(
         user_id=current_user.id,
         date_from=date_from,
