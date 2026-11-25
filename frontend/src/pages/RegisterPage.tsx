@@ -1,9 +1,11 @@
-import { ArrowRight, Info, Mail, User } from 'lucide-react'
+import { AlertCircle, ArrowRight, Info, Loader2, Mail, User } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { AuthLayout } from '../components/auth/AuthLayout'
 import { GoogleSignInButton } from '../components/auth/GoogleSignInButton'
 import { PasswordInput } from '../components/auth/PasswordInput'
+import { useAuth } from '../context/useAuth'
+import { getAuthErrorMessage } from '../services/authService'
 
 interface RegisterErrors {
   fullName?: string
@@ -14,13 +16,22 @@ interface RegisterErrors {
 }
 
 export function RegisterPage() {
+  const { register, isAuthenticated, isInitializing } = useAuth()
+  const navigate = useNavigate()
+
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [errors, setErrors] = useState<RegisterErrors>({})
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  if (!isInitializing && isAuthenticated) {
+    return <Navigate to="/dashboard" replace />
+  }
 
   const validate = (): RegisterErrors => {
     const nextErrors: RegisterErrors = {}
@@ -29,6 +40,8 @@ export function RegisterPage() {
 
     if (!trimmedName) {
       nextErrors.fullName = 'Full name is required.'
+    } else if (trimmedName.length < 2) {
+      nextErrors.fullName = 'Full name must be at least 2 characters.'
     }
     if (!trimmedEmail) {
       nextErrors.email = 'Email address is required.'
@@ -52,24 +65,39 @@ export function RegisterPage() {
     return nextErrors
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setNotice(null)
+    setSubmitError(null)
+
     const validationErrors = validate()
     setErrors(validationErrors)
-
     if (Object.keys(validationErrors).length > 0) {
-      setNotice(null)
       return
     }
 
-    setNotice(
-      'Registration form validated. Account creation API integration will be connected in the backend auth chunk.',
-    )
+    setIsSubmitting(true)
+    try {
+      await register({
+        full_name: fullName.trim(),
+        email: email.trim().toLowerCase(),
+        password,
+        confirm_password: confirmPassword,
+      })
+      navigate('/dashboard', { replace: true })
+    } catch (error) {
+      setSubmitError(
+        getAuthErrorMessage(error, 'Account creation failed. Please check your details.'),
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleGoogleClick = () => {
+    setSubmitError(null)
     setNotice(
-      'Google Sign-In button ready. OAuth client configuration will connect in the authentication chunk.',
+      'Google Sign-In is not configured yet. Please create an account using email and password.',
     )
   }
 
@@ -78,7 +106,7 @@ export function RegisterPage() {
       heading="Create Your Account"
       subheading="Start understanding your videos with AI."
     >
-      <GoogleSignInButton onClick={handleGoogleClick} />
+      <GoogleSignInButton onClick={handleGoogleClick} disabled={isSubmitting} />
 
       <div className="my-6 flex items-center gap-3">
         <div className="h-px flex-1 bg-slate-200" />
@@ -87,6 +115,16 @@ export function RegisterPage() {
         </span>
         <div className="h-px flex-1 bg-slate-200" />
       </div>
+
+      {submitError && (
+        <div
+          role="alert"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-xs leading-relaxed font-medium text-rose-700"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{submitError}</span>
+        </div>
+      )}
 
       {notice && (
         <div
@@ -120,6 +158,7 @@ export function RegisterPage() {
               onChange={(e) => {
                 setFullName(e.target.value)
                 if (errors.fullName) setErrors((prev) => ({ ...prev, fullName: undefined }))
+                if (submitError) setSubmitError(null)
               }}
               placeholder="Aarav Sharma"
               aria-invalid={Boolean(errors.fullName)}
@@ -156,6 +195,7 @@ export function RegisterPage() {
               onChange={(e) => {
                 setEmail(e.target.value)
                 if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }))
+                if (submitError) setSubmitError(null)
               }}
               placeholder="you@company.com"
               aria-invalid={Boolean(errors.email)}
@@ -182,6 +222,7 @@ export function RegisterPage() {
             onChange={(val) => {
               setPassword(val)
               if (errors.password) setErrors((prev) => ({ ...prev, password: undefined }))
+              if (submitError) setSubmitError(null)
             }}
           />
 
@@ -196,6 +237,7 @@ export function RegisterPage() {
               setConfirmPassword(val)
               if (errors.confirmPassword)
                 setErrors((prev) => ({ ...prev, confirmPassword: undefined }))
+              if (submitError) setSubmitError(null)
             }}
           />
         </div>
@@ -222,10 +264,20 @@ export function RegisterPage() {
 
         <button
           type="submit"
-          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-md shadow-[#2563EB]/20 transition-all hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/40"
+          disabled={isSubmitting}
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-md shadow-[#2563EB]/20 transition-all hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/40 disabled:cursor-not-allowed disabled:opacity-70"
         >
-          <span>Create Account</span>
-          <ArrowRight className="h-4 w-4" />
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Creating Account...</span>
+            </>
+          ) : (
+            <>
+              <span>Create Account</span>
+              <ArrowRight className="h-4 w-4" />
+            </>
+          )}
         </button>
       </form>
 

@@ -10,7 +10,8 @@ import {
   X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
-import { Link, NavLink } from 'react-router-dom'
+import { Link, NavLink, useNavigate } from 'react-router-dom'
+import { useAuth } from '../../context/useAuth'
 import { BrandLogo } from '../BrandLogo'
 
 interface SidebarNavItem {
@@ -35,7 +36,24 @@ interface SidebarProps {
   onCloseMobile: () => void
 }
 
+function getUserInitials(name?: string): string {
+  if (!name) return 'NX'
+  const parts = name.trim().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return 'NX'
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
+}
+
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+
+  const handleLogout = () => {
+    logout()
+    onNavigate?.()
+    navigate('/login', { replace: true })
+  }
+
   return (
     <div className="flex h-full flex-col justify-between bg-white">
       <div>
@@ -105,23 +123,27 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <div className="flex items-center justify-between gap-2 rounded-2xl border border-slate-200/90 bg-[#F5F8FC] p-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#2563EB] to-[#7C3AED] font-display text-xs font-bold text-white">
-              NX
+              {getUserInitials(user?.full_name)}
             </div>
             <div className="min-w-0">
-              <p className="truncate text-xs font-semibold text-[#111827]">Demo Operator</p>
-              <p className="truncate font-mono text-[10px] text-[#64748B]">Preview Mode</p>
+              <p className="truncate text-xs font-semibold text-[#111827]">
+                {user?.full_name || 'Authenticated User'}
+              </p>
+              <p className="truncate font-mono text-[10px] text-[#64748B]">
+                {user?.email || 'Active Session'}
+              </p>
             </div>
           </div>
 
-          <Link
-            to="/login"
-            onClick={onNavigate}
-            title="Go to Login"
-            aria-label="Go to Login"
-            className="rounded-lg p-1.5 text-[#64748B] transition-colors hover:bg-white hover:text-[#2563EB]"
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Sign out"
+            aria-label="Sign out"
+            className="cursor-pointer rounded-lg p-1.5 text-[#64748B] transition-colors hover:bg-white hover:text-rose-600"
           >
             <LogOut className="h-4 w-4" />
-          </Link>
+          </button>
         </div>
       </div>
     </div>

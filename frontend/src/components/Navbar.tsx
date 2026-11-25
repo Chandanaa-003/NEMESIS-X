@@ -1,7 +1,8 @@
-import { ArrowRight, Menu, X } from 'lucide-react'
+import { ArrowRight, LogOut, Menu, X } from 'lucide-react'
 import { AnimatePresence, motion, useMotionValueEvent, useScroll } from 'motion/react'
 import { useState } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useAuth } from '../context/useAuth'
 import { BrandLogo } from './BrandLogo'
 
 const sectionLinks = [
@@ -13,6 +14,8 @@ const sectionLinks = [
 export function Navbar() {
   const { scrollY } = useScroll()
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+  const { isAuthenticated, logout } = useAuth()
   const [scrolled, setScrolled] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -22,6 +25,12 @@ export function Navbar() {
 
   const handleSectionClick = () => {
     setMobileOpen(false)
+  }
+
+  const handleLogout = () => {
+    setMobileOpen(false)
+    logout()
+    navigate('/login', { replace: true })
   }
 
   return (
@@ -68,19 +77,41 @@ export function Navbar() {
 
         {/* Desktop actions */}
         <div className="hidden items-center gap-3 md:flex">
-          <Link
-            to="/login"
-            className="rounded-lg px-4 py-2 text-sm font-medium text-[#111827] transition-colors hover:bg-[#F5F8FC] hover:text-[#2563EB]"
-          >
-            Login
-          </Link>
-          <Link
-            to="/register"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-[#2563EB]/20 transition-all hover:bg-[#1D4ED8] hover:shadow-md hover:shadow-[#2563EB]/25"
-          >
-            <span>Get Started</span>
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          {isAuthenticated ? (
+            <>
+              <Link
+                to="/dashboard"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-[#2563EB]/20 transition-all hover:bg-[#1D4ED8]"
+              >
+                <span>Dashboard</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 px-3.5 py-2 text-sm font-medium text-[#111827] transition-colors hover:bg-[#F5F8FC] hover:text-rose-600"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign Out</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <Link
+                to="/login"
+                className="rounded-lg px-4 py-2 text-sm font-medium text-[#111827] transition-colors hover:bg-[#F5F8FC] hover:text-[#2563EB]"
+              >
+                Login
+              </Link>
+              <Link
+                to="/register"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-[#2563EB]/20 transition-all hover:bg-[#1D4ED8] hover:shadow-md hover:shadow-[#2563EB]/25"
+              >
+                <span>Get Started</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </>
+          )}
         </div>
 
         {/* Mobile menu trigger */}
@@ -129,21 +160,44 @@ export function Navbar() {
               )}
 
               <div className="flex flex-col gap-2 border-t border-slate-200/80 pt-3">
-                <Link
-                  to="/login"
-                  onClick={handleSectionClick}
-                  className="rounded-lg border border-slate-200 px-4 py-2 text-center text-sm font-medium text-[#111827] hover:bg-[#F5F8FC]"
-                >
-                  Login
-                </Link>
-                <Link
-                  to="/register"
-                  onClick={handleSectionClick}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1D4ED8]"
-                >
-                  <span>Get Started</span>
-                  <ArrowRight className="h-4 w-4" />
-                </Link>
+                {isAuthenticated ? (
+                  <>
+                    <Link
+                      to="/dashboard"
+                      onClick={handleSectionClick}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1D4ED8]"
+                    >
+                      <span>Dashboard</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-rose-600 hover:bg-rose-50"
+                    >
+                      <LogOut className="h-4 w-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      to="/login"
+                      onClick={handleSectionClick}
+                      className="rounded-lg border border-slate-200 px-4 py-2 text-center text-sm font-medium text-[#111827] hover:bg-[#F5F8FC]"
+                    >
+                      Login
+                    </Link>
+                    <Link
+                      to="/register"
+                      onClick={handleSectionClick}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1D4ED8]"
+                    >
+                      <span>Get Started</span>
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  </>
+                )}
               </div>
             </div>
           </motion.div>

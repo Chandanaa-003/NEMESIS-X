@@ -49,7 +49,12 @@ storage/reports/*
 *.wav
 *.mp3
 
-# Logs & OS Files
+# Logs & Local Databases
+*.db
+*.sqlite
+*.sqlite3
+nemesis.db
+backend/nemesis.db
 *.log
 logs/
 .DS_Store

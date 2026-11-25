@@ -1,8 +1,18 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import api_router
 from app.config import get_settings
+from app.database import init_db
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Initialize SQLite tables cleanly when the application starts."""
+    init_db()
+    yield
 
 
 def create_application() -> FastAPI:
@@ -14,6 +24,7 @@ def create_application() -> FastAPI:
         description=settings.app_description,
         version=settings.app_version,
         debug=settings.debug,
+        lifespan=lifespan,
     )
 
     application.add_middleware(

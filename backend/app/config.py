@@ -3,6 +3,8 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables or `.env`."""
@@ -22,6 +24,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    database_url: str = "sqlite:///./nemesis.db"
+    secret_key: str = "nemesis-x-dev-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60
+
     storage_root: str = "../storage"
     upload_dir: str = "../storage/uploads"
     processed_dir: str = "../storage/processed"
@@ -29,7 +36,7 @@ class Settings(BaseSettings):
     reports_dir: str = "../storage/reports"
 
     model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).resolve().parents[1] / ".env"),
+        env_file=str(BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -40,6 +47,15 @@ class Settings(BaseSettings):
         if isinstance(self.cors_origins, str):
             return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
         return self.cors_origins
+
+    @property
+    def resolved_database_url(self) -> str:
+        """Resolve relative SQLite URLs against the backend directory."""
+        prefix = "sqlite:///./"
+        if self.database_url.startswith(prefix):
+            db_relative_path = self.database_url[len(prefix) :]
+            return f"sqlite:///{(BACKEND_DIR / db_relative_path).as_posix()}"
+        return self.database_url
 
 
 @lru_cache

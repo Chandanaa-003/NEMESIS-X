@@ -2,7 +2,9 @@ import { MotionConfig } from 'motion/react'
 import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { Navbar } from './components/Navbar'
+import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import { DashboardLayout } from './components/dashboard/DashboardLayout'
+import { AuthProvider } from './context/AuthContext'
 import { DashboardPage } from './pages/DashboardPage'
 import { DashboardSectionPage } from './pages/DashboardSectionPage'
 import { HomePage } from './pages/HomePage'
@@ -42,88 +44,92 @@ function PublicLayout() {
 export function App() {
   return (
     <MotionConfig reducedMotion="user">
-      <BrowserRouter>
-        <ScrollManager />
-        <Routes>
-          {/* Public & Auth routes */}
-          <Route element={<PublicLayout />}>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/register" element={<RegisterPage />} />
-          </Route>
+      <AuthProvider>
+        <BrowserRouter>
+          <ScrollManager />
+          <Routes>
+            {/* Public & Auth routes */}
+            <Route element={<PublicLayout />}>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/register" element={<RegisterPage />} />
+            </Route>
 
-          {/* Dashboard & Analysis workspace routes */}
-          <Route element={<DashboardLayout />}>
-            <Route path="/analysis/new" element={<NewAnalysisPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route
-              path="/dashboard/new-analysis"
-              element={<Navigate to="/analysis/new" replace />}
-            />
-            <Route
-              path="/dashboard/live"
-              element={
-                <DashboardSectionPage
-                  title="Live Monitoring"
-                  routePath="/dashboard/live"
-                  iconKey="live"
-                  badgeText="COMING SOON"
-                  description="Coming Soon — Real-time webcam and camera stream monitoring with instant English & Kannada alerts will be available in an upcoming development stage."
+            {/* Protected Dashboard & Analysis workspace routes */}
+            <Route element={<ProtectedRoute />}>
+              <Route element={<DashboardLayout />}>
+                <Route path="/analysis/new" element={<NewAnalysisPage />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route
+                  path="/dashboard/new-analysis"
+                  element={<Navigate to="/analysis/new" replace />}
                 />
-              }
-            />
-            <Route
-              path="/dashboard/timeline"
-              element={
-                <DashboardSectionPage
-                  title="Event Timeline"
-                  routePath="/dashboard/timeline"
-                  iconKey="timeline"
-                  description="Chronological event discovery timeline placeholder. Temporal event markers and multi-object tracks will populate here once connected to the backend."
+                <Route
+                  path="/dashboard/live"
+                  element={
+                    <DashboardSectionPage
+                      title="Live Monitoring"
+                      routePath="/dashboard/live"
+                      iconKey="live"
+                      badgeText="COMING SOON"
+                      description="Coming Soon — Real-time webcam and camera stream monitoring with instant English & Kannada alerts will be available in an upcoming development stage."
+                    />
+                  }
                 />
-              }
-            />
-            <Route
-              path="/dashboard/evidence"
-              element={
-                <DashboardSectionPage
-                  title="Evidence Center"
-                  routePath="/dashboard/evidence"
-                  iconKey="evidence"
-                  description="Timestamped visual evidence and incident report center placeholder. Annotated keyframes and evidence clips from storage/evidence will appear here."
+                <Route
+                  path="/dashboard/timeline"
+                  element={
+                    <DashboardSectionPage
+                      title="Event Timeline"
+                      routePath="/dashboard/timeline"
+                      iconKey="timeline"
+                      description="Chronological event discovery timeline placeholder. Temporal event markers and multi-object tracks will populate here once connected to the backend."
+                    />
+                  }
                 />
-              }
-            />
-            <Route
-              path="/dashboard/history"
-              element={
-                <DashboardSectionPage
-                  title="Analysis History"
-                  routePath="/dashboard/history"
-                  iconKey="history"
-                  description="Completed video analysis archive placeholder. Historical runs, durations, and downloadable reports will be managed here."
+                <Route
+                  path="/dashboard/evidence"
+                  element={
+                    <DashboardSectionPage
+                      title="Evidence Center"
+                      routePath="/dashboard/evidence"
+                      iconKey="evidence"
+                      description="Timestamped visual evidence and incident report center placeholder. Annotated keyframes and evidence clips from storage/evidence will appear here."
+                    />
+                  }
                 />
-              }
-            />
-            <Route
-              path="/dashboard/settings"
-              element={
-                <DashboardSectionPage
-                  title="Settings"
-                  routePath="/dashboard/settings"
-                  iconKey="settings"
-                  description="Workspace preferences placeholder for alert language settings (English & Kannada), thresholds, and account configuration."
+                <Route
+                  path="/dashboard/history"
+                  element={
+                    <DashboardSectionPage
+                      title="Analysis History"
+                      routePath="/dashboard/history"
+                      iconKey="history"
+                      description="Completed video analysis archive placeholder. Historical runs, durations, and downloadable reports will be managed here."
+                    />
+                  }
                 />
-              }
-            />
-          </Route>
+                <Route
+                  path="/dashboard/settings"
+                  element={
+                    <DashboardSectionPage
+                      title="Settings"
+                      routePath="/dashboard/settings"
+                      iconKey="settings"
+                      description="Workspace preferences placeholder for alert language settings (English & Kannada), thresholds, and account configuration."
+                    />
+                  }
+                />
+              </Route>
+            </Route>
 
-          {/* Fallback 404 */}
-          <Route element={<PublicLayout />}>
-            <Route path="*" element={<NotFoundPage />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+            {/* Fallback 404 */}
+            <Route element={<PublicLayout />}>
+              <Route path="*" element={<NotFoundPage />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
     </MotionConfig>
   )
 }

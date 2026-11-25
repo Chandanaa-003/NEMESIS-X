@@ -1,21 +1,39 @@
-import { ArrowRight, Info, Mail } from 'lucide-react'
+import { AlertCircle, ArrowRight, Info, Loader2, Mail } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { AuthLayout } from '../components/auth/AuthLayout'
 import { GoogleSignInButton } from '../components/auth/GoogleSignInButton'
 import { PasswordInput } from '../components/auth/PasswordInput'
+import { useAuth } from '../context/useAuth'
+import { getAuthErrorMessage } from '../services/authService'
 
 interface LoginErrors {
   email?: string
   password?: string
 }
 
+interface LocationState {
+  from?: { pathname?: string }
+}
+
 export function LoginPage() {
+  const { login, isAuthenticated, isInitializing } = useAuth()
+  const navigate = useNavigate()
+  const location = useLocation()
+  const redirectTarget =
+    (location.state as LocationState | null)?.from?.pathname || '/dashboard'
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [rememberMe, setRememberMe] = useState(true)
   const [errors, setErrors] = useState<LoginErrors>({})
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  if (!isInitializing && isAuthenticated) {
+    return <Navigate to="/dashboard" replace />
+  }
 
   const validate = (): LoginErrors => {
     const nextErrors: LoginErrors = {}
@@ -31,28 +49,40 @@ export function LoginPage() {
     return nextErrors
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setNotice(null)
+    setSubmitError(null)
+
     const validationErrors = validate()
     setErrors(validationErrors)
-
     if (Object.keys(validationErrors).length > 0) {
-      setNotice(null)
       return
     }
 
-    setNotice(
-      'Sign-in UI validated. Authentication API integration will be connected in the backend auth chunk.',
-    )
+    setIsSubmitting(true)
+    try {
+      await login({
+        email: email.trim().toLowerCase(),
+        password,
+      })
+      navigate(redirectTarget, { replace: true })
+    } catch (error) {
+      setSubmitError(getAuthErrorMessage(error, 'Sign in failed. Please check your credentials.'))
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleGoogleClick = () => {
+    setSubmitError(null)
     setNotice(
-      'Google Sign-In button ready. OAuth client configuration will connect in the authentication chunk.',
+      'Google Sign-In is not configured yet. Please sign in with your email and password.',
     )
   }
 
   const handleForgotPassword = () => {
+    setSubmitError(null)
     setNotice('Password recovery is a placeholder link and will be connected with email services.')
   }
 
@@ -61,7 +91,7 @@ export function LoginPage() {
       heading="Welcome Back"
       subheading="Sign in to continue to your video intelligence workspace."
     >
-      <GoogleSignInButton onClick={handleGoogleClick} />
+      <GoogleSignInButton onClick={handleGoogleClick} disabled={isSubmitting} />
 
       <div className="my-6 flex items-center gap-3">
         <div className="h-px flex-1 bg-slate-200" />
@@ -70,6 +100,16 @@ export function LoginPage() {
         </span>
         <div className="h-px flex-1 bg-slate-200" />
       </div>
+
+      {submitError && (
+        <div
+          role="alert"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-xs leading-relaxed font-medium text-rose-700"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{submitError}</span>
+        </div>
+      )}
 
       {notice && (
         <div
@@ -103,6 +143,7 @@ export function LoginPage() {
               onChange={(e) => {
                 setEmail(e.target.value)
                 if (errors.email) setErrors((prev) => ({ ...prev, email: undefined }))
+                if (submitError) setSubmitError(null)
               }}
               placeholder="you@company.com"
               aria-invalid={Boolean(errors.email)}
@@ -126,6 +167,7 @@ export function LoginPage() {
           onChange={(val) => {
             setPassword(val)
             if (errors.password) setErrors((prev) => ({ ...prev, password: undefined }))
+            if (submitError) setSubmitError(null)
           }}
         />
 
@@ -151,10 +193,20 @@ export function LoginPage() {
 
         <button
           type="submit"
-          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-md shadow-[#2563EB]/20 transition-all hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/40"
+          disabled={isSubmitting}
+          className="mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[#2563EB] to-[#7C3AED] px-5 py-3 text-sm font-semibold text-white shadow-md shadow-[#2563EB]/20 transition-all hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2563EB]/40 disabled:cursor-not-allowed disabled:opacity-70"
         >
-          <span>Sign In</span>
-          <ArrowRight className="h-4 w-4" />
+          {isSubmitting ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Signing In...</span>
+            </>
+          ) : (
+            <>
+              <span>Sign In</span>
+              <ArrowRight className="h-4 w-4" />
+            </>
+          )}
         </button>
       </form>
 
