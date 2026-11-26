@@ -3,7 +3,6 @@ import {
   Brain,
   BriefcaseBusiness,
   History,
-  Fingerprint,
   LayoutDashboard,
   LogOut,
   MapPinned,
@@ -13,6 +12,7 @@ import {
   ShieldCheck,
   TrendingUp,
   UploadCloud,
+  UsersRound,
   X,
 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
@@ -37,7 +37,7 @@ const DASHBOARD_NAV_ITEMS: SidebarNavItem[] = [
   { label: 'Smart Zones', to: '/dashboard/zones', icon: MapPinned },
   { label: 'Investigation Workspace', to: '/dashboard/investigations', icon: BriefcaseBusiness },
   { label: 'Intelligent Video Search', to: '/dashboard/search', icon: ScanSearch },
-  { label: 'Unique Entity Intelligence', to: '/dashboard/identities', icon: Fingerprint },
+  { label: 'Unique Entities', to: '/dashboard/identities', icon: UsersRound },
   { label: 'Monitoring History', to: '/dashboard/history', icon: History },
   { label: 'Intelligence Analytics', to: '/dashboard/analytics', icon: TrendingUp },
   { label: 'Settings', to: '/dashboard/settings', icon: Settings },

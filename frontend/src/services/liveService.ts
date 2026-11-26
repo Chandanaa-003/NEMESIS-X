@@ -23,7 +23,10 @@ export interface LiveSessionStartResponse {
 export interface LiveDetectionInfo {
   track_id?: number | null
   track_code?: string | null
+  identity_id?: string | null
   identity_code?: string | null
+  identity_status?: 'confirmed' | 'probable' | 'unknown' | null
+  identity_confidence?: number | null
   class_id: number
   class_name: string
   confidence: number

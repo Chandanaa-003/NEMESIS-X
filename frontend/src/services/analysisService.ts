@@ -45,7 +45,10 @@ export interface BoundingBoxInfo {
 export interface DetectedObjectInfo {
   track_id?: number | null
   track_code?: string | null
+  identity_id?: string | null
   identity_code?: string | null
+  identity_status?: 'confirmed' | 'probable' | 'unknown' | null
+  identity_confidence?: number | null
   class_id: number
   class_name: string
   confidence: number
@@ -85,7 +88,10 @@ export interface TrackPositionSnapshot {
 export interface TrackSummaryInfo {
   track_id: number
   track_code?: string | null
+  identity_id?: string | null
   identity_code?: string | null
+  identity_status?: 'confirmed' | 'probable' | 'unknown' | null
+  identity_confidence?: number | null
   class_id: number
   class_name: string
   first_seen_frame: number

@@ -1,9 +1,9 @@
-import re
+import json
+import os
 from pathlib import Path
-
+import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -11,37 +11,35 @@ from app.core.security import get_current_user
 from app.database import get_db
 from app.models.analysis import Analysis
 from app.models.event import Event
-from app.models.identity import EntityIdentity, IdentityTrackAssociation
+from app.models.identity import EntityIdentity, IdentityObservation
 from app.models.live_session import LiveEvent, LiveSession
 from app.models.user import User
 from app.schemas.identity import (
-    EntityIdentityDetail,
-    EntityIdentitySummary,
+    EntityIdentityResponse,
     IdentityCorrectionRequest,
+    IdentityCorrectionResponse,
     IdentityCountsResponse,
     IdentityEntityType,
-    IdentityRelatedEventInfo,
+    IdentityLegacyCorrectionRequest,
+    IdentityObservationResponse,
+    IdentityRelatedEventResponse,
     IdentitySearchResponse,
     IdentitySourceType,
-    IdentityTrackAppearanceInfo,
+    IdentityStatus,
+    IdentityTrackAppearanceCompatResponse,
 )
-from app.services.identity_engine import correct_track_identity
-from app.services.track_explorer import format_track_code
+from app.services.identity_engine import (
+    aggregate_signatures,
+    get_identity_evidence_path,
+)
+from app.services.live_monitor import refresh_live_identity_matcher
 
 router = APIRouter(prefix="/identities", tags=["Persistent Identities"])
-SAFE_FRAME_FILENAME_RE = re.compile(r"^frame_\d{4}\.jpg$")
-SAFE_LIVE_EVIDENCE_FILENAME_RE = re.compile(r"^identity_t\d+_f\d+\.jpg$")
-TRACK_CODE_RE = re.compile(r"^T(\d+)$", re.IGNORECASE)
-IDENTITY_CODE_RE = re.compile(r"^[PO]\d+$", re.IGNORECASE)
 
 
-def _require_owned_source(
-    db: Session,
-    *,
-    source_type: IdentitySourceType,
-    source_id: str,
-    user_id: int,
-) -> None:
+def _owned_source(
+    source_type: IdentitySourceType, source_id: str, user_id: int, db: Session
+) -> Analysis | LiveSession:
     if source_type == "analysis":
         source = (
             db.query(Analysis)
@@ -55,10 +53,11 @@ def _require_owned_source(
             .first()
         )
     if source is None:
-        raise HTTPException(status_code=404, detail="Source not found.")
+        raise HTTPException(status_code=404, detail="Identity source not found.")
+    return source
 
 
-def _get_owned_identity(db: Session, identity_id: str, user_id: int) -> EntityIdentity:
+def _identity_by_id(identity_id: str, user_id: int, db: Session) -> EntityIdentity:
     identity = (
         db.query(EntityIdentity)
         .filter(EntityIdentity.id == identity_id, EntityIdentity.user_id == user_id)
@@ -66,516 +65,585 @@ def _get_owned_identity(db: Session, identity_id: str, user_id: int) -> EntityId
     )
     if identity is None:
         raise HTTPException(status_code=404, detail="Identity not found.")
-    _require_owned_source(
-        db,
-        source_type=identity.source_type,  # type: ignore[arg-type]
-        source_id=identity.source_id,
-        user_id=user_id,
-    )
+    _owned_source(identity.source_type, identity.source_id, user_id, db)  # type: ignore[arg-type]
     return identity
 
 
-def _all_source_events(
-    db: Session,
-    *,
-    source_type: str,
-    source_id: str,
-    user_id: int,
-) -> list[Event | LiveEvent]:
-    if source_type == "analysis":
-        return (
-            db.query(Event)
-            .filter(Event.analysis_id == source_id)
-            .order_by(Event.start_timestamp.asc(), Event.id.asc())
-            .limit(2000)
-            .all()
-        )
-    return (
-        db.query(LiveEvent)
-        .filter(
-            LiveEvent.session_id == source_id,
-            LiveEvent.user_id == user_id,
-        )
-        .order_by(LiveEvent.timestamp_seconds.asc(), LiveEvent.id.asc())
-        .limit(2000)
-        .all()
-    )
-
-
-def _event_track_ids(event: Event | LiveEvent) -> set[int]:
-    result: set[int] = set()
-    for track_id in event.involved_track_ids or []:
-        if isinstance(track_id, int) or (isinstance(track_id, str) and track_id.isdigit()):
-            result.add(int(track_id))
+def _event_track_ids(event: Event | LiveEvent) -> list[int]:
+    result: list[int] = []
+    for value in event.involved_track_ids or []:
+        if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+            result.append(int(value))
     return result
 
 
-def _matching_events(
-    events: list[Event | LiveEvent],
-    track_ids: set[int],
-) -> list[Event | LiveEvent]:
+def _related_events(
+    identity: EntityIdentity, track_ids: set[int], db: Session
+) -> list[IdentityRelatedEventResponse]:
     if not track_ids:
         return []
-    return [
-        row
-        for row in events
-        if track_ids.intersection(_event_track_ids(row))
-    ]
-
-
-def _event_info(
-    event: Event | LiveEvent,
-    track_ids: set[int],
-) -> IdentityRelatedEventInfo:
-    if isinstance(event, Event):
-        timestamp = event.start_timestamp
-        event_type = event.event_type
-        category = event.category
-        title = event.title
-        confidence = event.confidence
-        severity = event.severity
-    else:
-        timestamp = event.timestamp_seconds
-        event_type = event.event_type
-        category = event.category
-        title = event.title
-        confidence = event.confidence
-        severity = event.severity
-    matched_ids = _event_track_ids(event).intersection(track_ids)
-    return IdentityRelatedEventInfo(
-        id=event.id,
-        event_type=event_type,
-        category=category,
-        title=title,
-        timestamp_seconds=timestamp,
-        confidence=confidence,
-        severity=severity,
-        track_codes=[format_track_code(track_id) for track_id in sorted(matched_ids)],
-    )
-
-
-def _association_rows(
-    db: Session,
-    identity: EntityIdentity,
-) -> list[IdentityTrackAssociation]:
-    return (
-        db.query(IdentityTrackAssociation)
-        .filter(IdentityTrackAssociation.identity_id == identity.id)
-        .order_by(
-            IdentityTrackAssociation.first_seen_timestamp.asc(),
-            IdentityTrackAssociation.track_id.asc(),
+    results: list[IdentityRelatedEventResponse] = []
+    if identity.source_type == "analysis":
+        rows = (
+            db.query(Event)
+            .filter(Event.analysis_id == identity.source_id)
+            .order_by(Event.start_timestamp.asc())
+            .all()
         )
+        for event in rows:
+            involved = _event_track_ids(event)
+            if track_ids.intersection(involved):
+                results.append(
+                    IdentityRelatedEventResponse(
+                        event_id=event.id,
+                        id=event.id,
+                        event_type=event.event_type,
+                        category=event.category,
+                        title=event.title,
+                        timestamp_seconds=event.start_timestamp,
+                        confidence=event.confidence,
+                        severity=event.severity,
+                        involved_track_ids=involved,
+                        track_codes=[
+                            f"T{value:03d}" for value in sorted(track_ids.intersection(involved))
+                        ],
+                    )
+                )
+    else:
+        rows = (
+            db.query(LiveEvent)
+            .filter(LiveEvent.session_id == identity.source_id)
+            .order_by(LiveEvent.timestamp_seconds.asc())
+            .all()
+        )
+        for event in rows:
+            involved = _event_track_ids(event)
+            if track_ids.intersection(involved):
+                results.append(
+                    IdentityRelatedEventResponse(
+                        event_id=event.id,
+                        id=event.id,
+                        event_type=event.event_type,
+                        category=event.category,
+                        title=event.title,
+                        timestamp_seconds=event.timestamp_seconds,
+                        confidence=event.confidence,
+                        severity=event.severity,
+                        involved_track_ids=involved,
+                        track_codes=[
+                            f"T{value:03d}" for value in sorted(track_ids.intersection(involved))
+                        ],
+                    )
+                )
+    return results
+
+
+def _identity_response(
+    identity: EntityIdentity, db: Session, include_details: bool = True
+) -> EntityIdentityResponse:
+    observations = (
+        db.query(IdentityObservation)
+        .filter(
+            IdentityObservation.identity_id == identity.id,
+            IdentityObservation.user_id == identity.user_id,
+        )
+        .order_by(IdentityObservation.first_seen_timestamp.asc())
         .all()
     )
-
-
-def _evidence_url(api_prefix: str, identity: EntityIdentity, track_id: int) -> str:
-    return (
-        f"{api_prefix}/identities/{identity.id}/tracks/{track_id}/evidence"
-    )
-
-
-def _track_info(
-    association: IdentityTrackAssociation,
-    identity: EntityIdentity,
-    api_prefix: str,
-) -> IdentityTrackAppearanceInfo:
-    return IdentityTrackAppearanceInfo(
-        track_id=association.track_id,
-        track_code=format_track_code(association.track_id),
-        category=association.category,
-        first_seen_timestamp=association.first_seen_timestamp,
-        last_seen_timestamp=association.last_seen_timestamp,
-        detection_count=association.detection_count,
-        match_confidence=association.match_confidence,
-        match_status=association.match_status,  # type: ignore[arg-type]
-        matching_explanation=association.matching_explanation,
-        unresolved_candidate_code=association.unresolved_candidate_code,
-        evidence_url=(
-            _evidence_url(api_prefix, identity, association.track_id)
-            if association.evidence_reference
-            else None
-        ),
-        manually_corrected=association.manually_corrected,
-        correction_note=association.correction_note,
-    )
-
-
-def _summary(
-    db: Session,
-    identity: EntityIdentity,
-    api_prefix: str,
-    *,
-    related_events: list[Event | LiveEvent] | None = None,
-) -> EntityIdentitySummary:
-    associations = _association_rows(db, identity)
-    track_ids = {association.track_id for association in associations}
-    events = (
-        related_events
-        if related_events is not None
-        else _matching_events(
-            _all_source_events(
-                db,
-                source_type=identity.source_type,
-                source_id=identity.source_id,
-                user_id=identity.user_id,
+    observation_responses = [
+        IdentityObservationResponse(
+            track_id=observation.track_id,
+            track_code=f"T{observation.track_id:03d}",
+            first_seen_timestamp=observation.first_seen_timestamp,
+            last_seen_timestamp=observation.last_seen_timestamp,
+            detection_count=observation.detection_count,
+            match_confidence=observation.match_confidence,
+            feature_quality=observation.feature_quality,
+            matching_explanation=observation.matching_explanation,
+            bbox=observation.bbox,
+            evidence_url=(
+                f"{get_settings().api_v1_prefix}/identities/{identity.id}/"
+                f"observations/{observation.track_id}/evidence"
+                if observation.evidence_path
+                else None
             ),
-            track_ids,
         )
-    )
-    merged_into = (
-        db.query(EntityIdentity)
-        .filter(EntityIdentity.id == identity.merged_into_identity_id)
-        .first()
+        for observation in observations
+    ]
+    legacy_observations = [
+        IdentityTrackAppearanceCompatResponse(
+            track_id=observation.track_id,
+            track_code=f"T{observation.track_id:03d}",
+            category=observation.class_name,
+            first_seen_timestamp=observation.first_seen_timestamp,
+            last_seen_timestamp=observation.last_seen_timestamp,
+            detection_count=observation.detection_count,
+            match_confidence=observation.match_confidence,
+            match_status=identity.status,  # type: ignore[arg-type]
+            matching_explanation=observation.matching_explanation,
+            evidence_url=(
+                f"{get_settings().api_v1_prefix}/identities/{identity.id}/"
+                f"observations/{observation.track_id}/evidence"
+                if observation.evidence_path
+                else None
+            ),
+            manually_corrected="Manually reviewed" in observation.matching_explanation,
+            correction_note=(
+                observation.matching_explanation
+                if "Manually reviewed" in observation.matching_explanation
+                else None
+            ),
+        )
+        for observation in observations
+    ]
+    track_ids = {observation.track_id for observation in observations}
+    related_events = _related_events(identity, track_ids, db) if include_details else []
+    merged_into_code = (
+        db.query(EntityIdentity.identity_code)
+        .filter(
+            EntityIdentity.id == identity.merged_into_identity_id,
+            EntityIdentity.user_id == identity.user_id,
+        )
+        .scalar()
         if identity.merged_into_identity_id
         else None
     )
-    return EntityIdentitySummary(
+    return EntityIdentityResponse(
         id=identity.id,
-        identity_code=identity.identity_code,
         source_type=identity.source_type,  # type: ignore[arg-type]
         source_id=identity.source_id,
+        identity_code=identity.identity_code,
         entity_type=identity.entity_type,  # type: ignore[arg-type]
-        category=identity.category,
+        class_name=identity.class_name,
+        category=identity.class_name,
+        status=identity.status,  # type: ignore[arg-type]
         first_seen_timestamp=identity.first_seen_timestamp,
         last_seen_timestamp=identity.last_seen_timestamp,
-        appearance_count=identity.appearance_count,
+        appearance_count=len(observations),
+        associated_track_ids=sorted(track_ids),
+        associated_track_codes=[f"T{track_id:03d}" for track_id in sorted(track_ids)],
         matching_confidence=identity.matching_confidence,
-        status=identity.status,  # type: ignore[arg-type]
         matching_explanation=identity.matching_explanation,
-        associated_track_ids=[item.track_id for item in associations],
-        associated_track_codes=[
-            format_track_code(item.track_id) for item in associations
+        feature_reference=identity.feature_reference,
+        evidence_refs=[
+            item.evidence_url for item in observation_responses if item.evidence_url
         ],
         evidence_urls=[
-            _evidence_url(api_prefix, identity, item.track_id)
-            for item in associations
-            if item.evidence_reference
+            item.evidence_url for item in observation_responses if item.evidence_url
         ],
-        related_event_count=len(events),
-        merged_into_code=merged_into.identity_code if merged_into else None,
-    )
-
-
-def _detail(
-    db: Session,
-    identity: EntityIdentity,
-    api_prefix: str,
-) -> EntityIdentityDetail:
-    associations = _association_rows(db, identity)
-    track_ids = {item.track_id for item in associations}
-    events = _matching_events(
-        _all_source_events(
-            db,
-            source_type=identity.source_type,
-            source_id=identity.source_id,
-            user_id=identity.user_id,
-        ),
-        track_ids,
-    )
-    summary = _summary(db, identity, api_prefix, related_events=events)
-    return EntityIdentityDetail(
-        **summary.model_dump(),
-        track_appearances=[
-            _track_info(item, identity, api_prefix) for item in associations
-        ],
-        related_events=[_event_info(event, track_ids) for event in events],
+        related_event_count=len(related_events),
+        merged_into_code=merged_into_code,
+        observations=observation_responses if include_details else [],
+        track_appearances=legacy_observations if include_details else [],
+        related_events=related_events,
     )
 
 
 @router.get(
     "",
     response_model=IdentitySearchResponse,
-    summary="Search anonymous identities within one owned video or live session",
+    summary="Search source-scoped anonymous people and object identities",
 )
 def search_identities(
     source_type: IdentitySourceType,
-    source_id: str = Query(min_length=1, max_length=36),
+    source_id: str,
     entity_type: IdentityEntityType | None = None,
-    identity_code: str | None = Query(default=None, max_length=16),
-    track_id: int | None = Query(default=None, ge=0),
-    query: str | None = Query(default=None, max_length=100),
-    min_appearances: int = Query(default=1, ge=1),
-    first_seen_from: float | None = Query(default=None, ge=0),
-    first_seen_to: float | None = Query(default=None, ge=0),
-    last_seen_from: float | None = Query(default=None, ge=0),
-    last_seen_to: float | None = Query(default=None, ge=0),
-    event_type: str | None = Query(default=None, max_length=64),
-    limit: int = Query(default=50, ge=1, le=200),
+    identity_code: str | None = None,
+    status_filter: IdentityStatus | None = Query(default=None, alias="status"),
+    min_appearances: int = Query(default=1, ge=0),
+    first_seen_after: float | None = Query(default=None, ge=0),
+    last_seen_before: float | None = Query(default=None, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> IdentitySearchResponse:
-    """Return unique entities only for the selected source; IDs never cross sources."""
-    _require_owned_source(
-        db,
-        source_type=source_type,
-        source_id=source_id,
-        user_id=current_user.id,
-    )
-    statement = db.query(EntityIdentity).filter(
+    """Return unique identities only within one owned recording or live session."""
+    _owned_source(source_type, source_id, current_user.id, db)
+    base = db.query(EntityIdentity).filter(
         EntityIdentity.user_id == current_user.id,
         EntityIdentity.source_type == source_type,
         EntityIdentity.source_id == source_id,
-        EntityIdentity.appearance_count >= min_appearances,
-        EntityIdentity.merged_into_identity_id.is_(None),
+        EntityIdentity.appearance_count > 0,
     )
-    if entity_type:
-        statement = statement.filter(EntityIdentity.entity_type == entity_type)
-    if identity_code:
-        statement = statement.filter(
-            EntityIdentity.identity_code.ilike(identity_code.strip())
-        )
-    if first_seen_from is not None:
-        statement = statement.filter(EntityIdentity.first_seen_timestamp >= first_seen_from)
-    if first_seen_to is not None:
-        statement = statement.filter(EntityIdentity.first_seen_timestamp <= first_seen_to)
-    if last_seen_from is not None:
-        statement = statement.filter(EntityIdentity.last_seen_timestamp >= last_seen_from)
-    if last_seen_to is not None:
-        statement = statement.filter(EntityIdentity.last_seen_timestamp <= last_seen_to)
-    if track_id is not None:
-        statement = statement.join(
-            IdentityTrackAssociation,
-            IdentityTrackAssociation.identity_id == EntityIdentity.id,
-        ).filter(IdentityTrackAssociation.track_id == track_id)
-    if query:
-        term = query.strip()
-        track_match = TRACK_CODE_RE.fullmatch(term)
-        if track_match:
-            statement = statement.join(
-                IdentityTrackAssociation,
-                IdentityTrackAssociation.identity_id == EntityIdentity.id,
-            ).filter(IdentityTrackAssociation.track_id == int(track_match.group(1)))
-        elif IDENTITY_CODE_RE.fullmatch(term):
-            statement = statement.filter(EntityIdentity.identity_code.ilike(term))
-        else:
-            statement = statement.filter(EntityIdentity.category.ilike(f"%{term}%"))
+    total_people = base.filter(EntityIdentity.entity_type == "person").count()
+    total_objects = base.filter(EntityIdentity.entity_type == "object").count()
 
-    identities = (
-        statement.order_by(
-            EntityIdentity.first_seen_timestamp.asc(),
-            EntityIdentity.identity_code.asc(),
-        )
+    query = base.filter(EntityIdentity.appearance_count >= min_appearances)
+    if entity_type:
+        query = query.filter(EntityIdentity.entity_type == entity_type)
+    if status_filter:
+        query = query.filter(EntityIdentity.status == status_filter)
+    if identity_code:
+        query = query.filter(EntityIdentity.identity_code == identity_code.strip().upper())
+    if first_seen_after is not None:
+        query = query.filter(EntityIdentity.first_seen_timestamp >= first_seen_after)
+    if last_seen_before is not None:
+        query = query.filter(EntityIdentity.last_seen_timestamp <= last_seen_before)
+    total = query.count()
+    rows = (
+        query.order_by(EntityIdentity.first_seen_timestamp.asc(), EntityIdentity.identity_code.asc())
+        .offset(offset)
+        .limit(limit)
         .all()
     )
-    source_events = _all_source_events(
-        db,
+    return IdentitySearchResponse(
         source_type=source_type,
         source_id=source_id,
-        user_id=current_user.id,
-    )
-    events_by_identity: dict[str, list[Event | LiveEvent]] = {}
-    for identity in identities:
-        track_ids = {
-            association.track_id
-            for association in _association_rows(db, identity)
-        }
-        related_events = _matching_events(source_events, track_ids)
-        events_by_identity[identity.id] = related_events
-
-    if event_type:
-        identities = [
-            identity
-            for identity in identities
-            if any(event.event_type == event_type for event in events_by_identity[identity.id])
-        ]
-    total = len(identities)
-    page = identities[offset : offset + limit]
-    api_prefix = get_settings().api_v1_prefix
-    return IdentitySearchResponse(
-        items=[
-            _summary(
-                db,
-                identity,
-                api_prefix,
-                related_events=events_by_identity[identity.id],
-            )
-            for identity in page
-        ],
+        total_unique_people=total_people,
+        total_unique_objects=total_objects,
         total=total,
         limit=limit,
         offset=offset,
+        items=[_identity_response(row, db, include_details=False) for row in rows],
     )
 
 
 @router.get(
     "/counts",
     response_model=IdentityCountsResponse,
-    summary="Count unique people and objects in one owned source",
+    summary="Get source-scoped unique identity counts",
 )
 def get_identity_counts(
     source_type: IdentitySourceType,
-    source_id: str = Query(min_length=1, max_length=36),
+    source_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> IdentityCountsResponse:
-    _require_owned_source(
-        db,
-        source_type=source_type,
-        source_id=source_id,
-        user_id=current_user.id,
-    )
-    rows = (
-        db.query(EntityIdentity.entity_type, func.count(EntityIdentity.id))
+    _owned_source(source_type, source_id, current_user.id, db)
+    identities = (
+        db.query(EntityIdentity)
         .filter(
             EntityIdentity.user_id == current_user.id,
             EntityIdentity.source_type == source_type,
             EntityIdentity.source_id == source_id,
             EntityIdentity.appearance_count > 0,
-            EntityIdentity.merged_into_identity_id.is_(None),
         )
-        .group_by(EntityIdentity.entity_type)
         .all()
     )
-    counts = {str(entity_type): int(count) for entity_type, count in rows}
-    status_counts = (
-        db.query(EntityIdentity.status, func.count(EntityIdentity.id))
-        .filter(
-            EntityIdentity.user_id == current_user.id,
-            EntityIdentity.source_type == source_type,
-            EntityIdentity.source_id == source_id,
-            EntityIdentity.appearance_count > 0,
-            EntityIdentity.merged_into_identity_id.is_(None),
-        )
-        .group_by(EntityIdentity.status)
-        .all()
-    )
-    statuses = {str(match_status): int(count) for match_status, count in status_counts}
     return IdentityCountsResponse(
-        unique_people=counts.get("person", 0),
-        unique_objects=counts.get("object", 0),
-        confirmed=statuses.get("confirmed", 0),
-        probable=statuses.get("probable", 0),
-        unknown=statuses.get("unknown", 0),
+        unique_people=sum(row.entity_type == "person" for row in identities),
+        unique_objects=sum(row.entity_type == "object" for row in identities),
+        confirmed=sum(row.status == "confirmed" for row in identities),
+        probable=sum(row.status == "probable" for row in identities),
+        unknown=sum(row.status == "unknown" for row in identities),
     )
 
 
 @router.get(
     "/{identity_id}",
-    response_model=EntityIdentityDetail,
-    summary="Get one source-scoped identity, its track fragments, events, and evidence",
+    response_model=EntityIdentityResponse,
+    summary="Get identity appearances, associated events, and evidence",
 )
 def get_identity(
     identity_id: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> EntityIdentityDetail:
-    identity = _get_owned_identity(db, identity_id, current_user.id)
-    return _detail(db, identity, get_settings().api_v1_prefix)
+) -> EntityIdentityResponse:
+    identity = _identity_by_id(identity_id, current_user.id, db)
+    return _identity_response(identity, db)
+
+
+def _refresh_identity_summary(identity: EntityIdentity, db: Session) -> None:
+    observations = (
+        db.query(IdentityObservation)
+        .filter(IdentityObservation.identity_id == identity.id)
+        .all()
+    )
+    identity.associated_track_ids = sorted({row.track_id for row in observations})
+    identity.appearance_count = len(observations)
+    if not observations:
+        identity.status = "unknown"
+        identity.matching_confidence = 0.0
+        identity.matching_explanation = "No track appearances remain assigned to this identity."
+        identity.descriptor_sample_count = 0
+        identity.appearance_descriptor = None
+        identity.appearance_signature = None
+        identity.evidence_refs = []
+        return
+    identity.first_seen_timestamp = min(row.first_seen_timestamp for row in observations)
+    identity.last_seen_timestamp = max(row.last_seen_timestamp for row in observations)
+    identity.appearance_signature = aggregate_signatures(
+        [row.appearance_signature for row in observations if row.appearance_signature]
+    )
+    identity.appearance_descriptor = identity.appearance_signature
+    identity.descriptor_sample_count = sum(
+        row.appearance_signature is not None for row in observations
+    )
+    identity.category = observations[0].class_name
+    identity.class_name = observations[0].class_name
+    identity.evidence_refs = [
+        f"{get_settings().api_v1_prefix}/identities/{identity.id}/"
+        f"observations/{row.track_id}/evidence"
+        for row in observations
+        if row.evidence_path
+    ]
+
+
+def _update_analysis_track_labels(
+    analysis_id: str, track_id: int, target: EntityIdentity
+) -> None:
+    analysis_dir = get_settings().resolved_processed_dir / analysis_id
+    for filename, collection_key, id_key in (
+        ("detections.json", "frames", "track_id"),
+        ("tracks.json", "tracks", "track_id"),
+    ):
+        path = analysis_dir / filename
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if filename == "detections.json":
+            records = [
+                detection
+                for frame in payload.get(collection_key, [])
+                for detection in frame.get("detections", [])
+            ]
+        else:
+            records = payload.get(collection_key, [])
+        for record in records:
+            if record.get(id_key) is not None and int(record[id_key]) == track_id:
+                record.update(
+                    {
+                        "identity_id": target.id,
+                        "identity_code": target.identity_code,
+                        "identity_status": "confirmed",
+                        "identity_confidence": 1.0,
+                    }
+                )
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
 
 
 @router.patch(
-    "/{identity_id}/tracks/{track_id}",
-    response_model=EntityIdentityDetail,
-    summary="Manually correct a track-to-identity association",
+    "/{identity_id}/observations/{track_id}",
+    response_model=IdentityCorrectionResponse,
+    summary="Manually confirm or reassign a source-local track identity",
 )
-def correct_identity_track(
+def correct_identity_assignment(
     identity_id: str,
     track_id: int,
     payload: IdentityCorrectionRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> EntityIdentityDetail:
-    identity = _get_owned_identity(db, identity_id, current_user.id)
-    if identity.appearance_count == 0:
-        raise HTTPException(status_code=409, detail="Merged identities cannot be edited.")
-    association = (
-        db.query(IdentityTrackAssociation)
+) -> IdentityCorrectionResponse:
+    current = _identity_by_id(identity_id, current_user.id, db)
+    observation = (
+        db.query(IdentityObservation)
         .filter(
-            IdentityTrackAssociation.identity_id == identity.id,
-            IdentityTrackAssociation.source_type == identity.source_type,
-            IdentityTrackAssociation.source_id == identity.source_id,
-            IdentityTrackAssociation.track_id == track_id,
+            IdentityObservation.identity_id == current.id,
+            IdentityObservation.track_id == track_id,
+            IdentityObservation.user_id == current_user.id,
         )
         .first()
     )
-    if association is None:
-        raise HTTPException(status_code=404, detail="Track association not found.")
-    if (payload.target_identity_id is not None) == payload.create_new_identity:
+    if observation is None:
+        raise HTTPException(status_code=404, detail="Track appearance not found for this identity.")
+    target = _identity_by_id(payload.target_identity_id, current_user.id, db)
+    if (
+        target.source_type != current.source_type
+        or target.source_id != current.source_id
+        or target.entity_type != current.entity_type
+    ):
         raise HTTPException(
-            status_code=422,
-            detail="Provide either target_identity_id or create_new_identity=true.",
+            status_code=400,
+            detail="Manual corrections must remain within the same source and entity type.",
         )
-    target_identity = None
-    if payload.target_identity_id:
-        target_identity = (
-            db.query(EntityIdentity)
-            .filter(
-                EntityIdentity.id == payload.target_identity_id,
-                EntityIdentity.user_id == current_user.id,
-                EntityIdentity.appearance_count > 0,
-                EntityIdentity.merged_into_identity_id.is_(None),
-            )
-            .first()
-        )
-        if target_identity is None:
-            raise HTTPException(status_code=404, detail="Target identity not found.")
-    try:
-        corrected = correct_track_identity(
-            db,
-            identity=identity,
-            association=association,
+
+    return _apply_identity_correction(
+        current=current,
+        target=target,
+        observation=observation,
+        current_user=current_user,
+        db=db,
+    )
+
+
+def _apply_identity_correction(
+    *,
+    current: EntityIdentity,
+    target: EntityIdentity,
+    observation: IdentityObservation,
+    current_user: User,
+    db: Session,
+    correction_note: str | None = None,
+) -> IdentityCorrectionResponse:
+    previous_code = current.identity_code
+    observation.identity_id = target.id
+    observation.match_confidence = 1.0
+    explanation = correction_note or "Manually reviewed and assigned by the authenticated owner."
+    observation.matching_explanation = explanation
+    current.status = "confirmed"
+    target.status = "confirmed"
+    target.matching_confidence = 1.0
+    target.matching_explanation = (
+        f"{explanation} Associated ByteTrack IDs remain recorded."
+    )
+    db.flush()
+    _refresh_identity_summary(current, db)
+    _refresh_identity_summary(target, db)
+    if current.source_type == "analysis":
+        _update_analysis_track_labels(current.source_id, observation.track_id, target)
+    db.commit()
+    db.refresh(target)
+    if current.source_type == "live_session":
+        refresh_live_identity_matcher(
+            session_id=current.source_id,
             user_id=current_user.id,
-            target_identity=target_identity,
-            create_new_identity=payload.create_new_identity,
-            correction_note=payload.correction_note,
+            db=db,
         )
-        db.commit()
-        db.refresh(corrected)
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _detail(db, corrected, get_settings().api_v1_prefix)
+    return IdentityCorrectionResponse(
+        identity=_identity_response(target, db),
+        corrected_track_id=observation.track_id,
+        previous_identity_code=previous_code,
+        correction=(
+            f"Track T{observation.track_id:03d} was manually assigned to {target.identity_code}. "
+            "The original tracking ID is unchanged."
+        ),
+    )
+
+
+@router.patch(
+    "/{identity_id}/tracks/{track_id}",
+    response_model=IdentityCorrectionResponse,
+    summary="Correct an identity using the legacy track route",
+)
+def correct_identity_track_legacy(
+    identity_id: str,
+    track_id: int,
+    payload: IdentityLegacyCorrectionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> IdentityCorrectionResponse:
+    current = _identity_by_id(identity_id, current_user.id, db)
+    observation = (
+        db.query(IdentityObservation)
+        .filter(
+            IdentityObservation.identity_id == current.id,
+            IdentityObservation.track_id == track_id,
+            IdentityObservation.user_id == current_user.id,
+        )
+        .first()
+    )
+    if observation is None:
+        raise HTTPException(status_code=404, detail="Track appearance not found for this identity.")
+    if payload.create_new_identity == bool(payload.target_identity_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Choose either an existing target identity or create a new identity.",
+        )
+
+    if payload.create_new_identity:
+        prefix = "P" if current.entity_type == "person" else "O"
+        codes = (
+            db.query(EntityIdentity.identity_code)
+            .filter(
+                EntityIdentity.user_id == current_user.id,
+                EntityIdentity.source_type == current.source_type,
+                EntityIdentity.source_id == current.source_id,
+                EntityIdentity.identity_code.like(f"{prefix}%"),
+            )
+            .all()
+        )
+        next_number = max(
+            (
+                int(code[0][1:])
+                for code in codes
+                if code[0][1:].isdigit()
+            ),
+            default=0,
+        ) + 1
+        target = EntityIdentity(
+            id=str(uuid.uuid4()),
+            user_id=current_user.id,
+            source_type=current.source_type,
+            source_id=current.source_id,
+            analysis_id=current.source_id if current.source_type == "analysis" else None,
+            live_session_id=current.source_id if current.source_type == "live_session" else None,
+            identity_code=f"{prefix}{next_number:03d}",
+            entity_type=current.entity_type,
+            category=observation.class_name,
+            class_name=observation.class_name,
+            status="confirmed",
+            first_seen_timestamp=observation.first_seen_timestamp,
+            last_seen_timestamp=observation.last_seen_timestamp,
+            appearance_count=1,
+            descriptor_sample_count=1 if observation.appearance_signature else 0,
+            associated_track_ids=[observation.track_id],
+            appearance_descriptor=observation.appearance_signature,
+            appearance_signature=observation.appearance_signature,
+            last_position=observation.last_position,
+            feature_reference=current.feature_reference,
+            matching_confidence=1.0,
+            matching_explanation=payload.correction_note
+            or "Created as a separate identity by authenticated owner review.",
+            evidence_refs=[],
+        )
+        db.add(target)
+        db.flush()
+    else:
+        if payload.target_identity_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A target identity is required unless creating a new identity.",
+            )
+        target = _identity_by_id(payload.target_identity_id, current_user.id, db)
+        if (
+            target.source_type != current.source_type
+            or target.source_id != current.source_id
+            or target.entity_type != current.entity_type
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Manual corrections must remain within the same source and entity type.",
+            )
+        if payload.correction_note:
+            target.matching_explanation = payload.correction_note
+
+    result = _apply_identity_correction(
+        current=current,
+        target=target,
+        observation=observation,
+        current_user=current_user,
+        db=db,
+        correction_note=payload.correction_note,
+    )
+    if payload.create_new_identity:
+        result.correction = (
+            f"Track T{observation.track_id:03d} was separated into new identity "
+            f"{target.identity_code}; the original tracking ID is unchanged."
+        )
+    return result
 
 
 @router.get(
-    "/{identity_id}/tracks/{track_id}/evidence",
-    summary="Fetch an existing frame or stored live appearance crop",
+    "/{identity_id}/observations/{track_id}/evidence",
+    # Keep the original URL available to existing clients.
 )
-def get_identity_evidence(
+@router.get(
+    "/{identity_id}/tracks/{track_id}/evidence",
+    summary="Fetch privacy-preserving appearance evidence for an owned identity track",
+)
+def get_identity_observation_evidence(
     identity_id: str,
     track_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    identity = _get_owned_identity(db, identity_id, current_user.id)
-    association = (
-        db.query(IdentityTrackAssociation)
+    identity = _identity_by_id(identity_id, current_user.id, db)
+    observation = (
+        db.query(IdentityObservation)
         .filter(
-            IdentityTrackAssociation.identity_id == identity.id,
-            IdentityTrackAssociation.source_type == identity.source_type,
-            IdentityTrackAssociation.source_id == identity.source_id,
-            IdentityTrackAssociation.track_id == track_id,
+            IdentityObservation.identity_id == identity.id,
+            IdentityObservation.track_id == track_id,
+            IdentityObservation.user_id == current_user.id,
         )
         .first()
     )
-    if association is None or not association.evidence_reference:
+    if observation is None:
         raise HTTPException(status_code=404, detail="Identity evidence not found.")
-
-    settings = get_settings()
-    if identity.source_type == "analysis":
-        filename = association.evidence_reference
-        if not SAFE_FRAME_FILENAME_RE.fullmatch(filename):
-            raise HTTPException(status_code=404, detail="Identity evidence not found.")
-        frame_root = (settings.resolved_processed_dir / identity.source_id / "frames").resolve()
-        target_path = (frame_root / filename).resolve()
-        if target_path.parent != frame_root:
-            raise HTTPException(status_code=404, detail="Identity evidence not found.")
-    else:
-        filename = association.evidence_reference
-        if not SAFE_LIVE_EVIDENCE_FILENAME_RE.fullmatch(filename):
-            raise HTTPException(status_code=404, detail="Identity evidence not found.")
-        live_root = settings.resolved_live_dir.resolve()
-        session_dir = (live_root / identity.source_id).resolve()
-        evidence_dir = (session_dir / "identity-evidence").resolve()
-        target_path = (evidence_dir / filename).resolve()
-        if (
-            session_dir.parent != live_root
-            or evidence_dir.parent != session_dir
-            or target_path.parent != evidence_dir
-        ):
-            raise HTTPException(status_code=404, detail="Identity evidence not found.")
-    if not target_path.is_file():
-        raise HTTPException(status_code=404, detail="Identity evidence file missing.")
-    return FileResponse(path=target_path, media_type="image/jpeg")
+    try:
+        path = get_identity_evidence_path(observation=observation, identity=identity)
+    except (FileNotFoundError, PermissionError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(path, media_type="image/jpeg", filename=f"{identity.identity_code}-T{track_id:03d}.jpg")

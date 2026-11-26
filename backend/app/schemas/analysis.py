@@ -52,7 +52,10 @@ class DetectedObjectInfo(BaseModel):
 
     track_id: int | None = None
     track_code: str | None = None
+    identity_id: str | None = None
     identity_code: str | None = None
+    identity_status: Literal["confirmed", "probable", "unknown"] | None = None
+    identity_confidence: float | None = None
     class_id: int
     class_name: str
     confidence: float
@@ -100,7 +103,10 @@ class TrackSummaryInfo(BaseModel):
 
     track_id: int
     track_code: str | None = None
+    identity_id: str | None = None
     identity_code: str | None = None
+    identity_status: Literal["confirmed", "probable", "unknown"] | None = None
+    identity_confidence: float | None = None
     class_id: int
     class_name: str
     first_seen_frame: int

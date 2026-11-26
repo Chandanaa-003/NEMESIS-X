@@ -5,7 +5,7 @@ from app.models.behavior import BehaviorSnapshot
 from app.models.detection import Detection
 from app.models.event import Event
 from app.models.evidence import Evidence
-from app.models.identity import EntityIdentity, IdentityTrackAssociation
+from app.models.identity import EntityIdentity, IdentityObservation
 from app.models.track import Track
 from app.models.user import User
 from app.models.video import Video
@@ -18,7 +18,7 @@ __all__ = [
     "Event",
     "Evidence",
     "EntityIdentity",
-    "IdentityTrackAssociation",
+    "IdentityObservation",
     "Track",
     "User",
     "Video",

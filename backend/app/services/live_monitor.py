@@ -33,8 +33,9 @@ from app.services.detector import get_detection_model
 from app.services.behavior_engine import DEFAULT_BASELINE_CONFIG
 from app.services.event_engine import discover_events_from_data
 from app.services.identity_engine import (
-    get_track_identity_codes,
-    update_live_track_appearances,
+    IdentityMatcher,
+    identify_live_detections,
+    initialize_live_identity_matcher,
 )
 from app.services.interaction_engine import SessionTemporalMemory
 from app.services.track_explorer import format_track_code
@@ -63,6 +64,7 @@ class _LiveSessionRuntime:
     track_map: dict[int, _TrackAccumulator] = field(default_factory=dict)
     emitted_event_keys: set[tuple[str, tuple[int, ...]]] = field(default_factory=set)
     memory: SessionTemporalMemory | None = None
+    identity_matcher: IdentityMatcher | None = None
     zone_engine: ZoneIntelligenceEngine = field(default_factory=ZoneIntelligenceEngine)
     session_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -72,6 +74,23 @@ class _LiveSessionRuntime:
 
 
 _active_live_sessions: dict[str, _LiveSessionRuntime] = {}
+
+
+def refresh_live_identity_matcher(
+    *, session_id: str, user_id: int, db: Session
+) -> None:
+    """Reload corrected owner-scoped track assignments into an active live session."""
+    with _live_registry_lock:
+        runtime = _active_live_sessions.get(session_id)
+    if runtime is None or runtime.user_id != user_id:
+        return
+    with runtime.session_lock:
+        if runtime.identity_matcher is not None:
+            runtime.identity_matcher = initialize_live_identity_matcher(
+                db=db,
+                session_id=session_id,
+                user_id=user_id,
+            )
 
 
 def _create_isolated_bytetracker(tracker_config: str) -> Any:
@@ -547,32 +566,25 @@ def process_live_frame(
                             )
                         )
 
-        runtime.total_detections += len(frame_detections)
-        detected_identity_codes = update_live_track_appearances(
-            db,
-            user_id=session_row.user_id,
+        if runtime.identity_matcher is None:
+            runtime.identity_matcher = initialize_live_identity_matcher(
+                db=db,
+                session_id=session_row.id,
+                user_id=session_row.user_id,
+            )
+        identify_live_detections(
+            db=db,
+            matcher=runtime.identity_matcher,
             session_id=session_row.id,
-            frame_index=frame_index,
-            timestamp_seconds=ts,
+            user_id=session_row.user_id,
             frame=frame_img,
+            frame_index=frame_index,
+            timestamp=ts,
             detections=frame_detections,
         )
-        for detection in frame_detections:
-            if detection.track_id is not None:
-                detection.identity_code = detected_identity_codes.get(detection.track_id)
 
+        runtime.total_detections += len(frame_detections)
         active_tracks = _build_track_summaries(runtime)
-        track_identity_codes = get_track_identity_codes(
-            db,
-            source_type="live_session",
-            source_id=session_row.id,
-        )
-        active_tracks = [
-            track.model_copy(
-                update={"identity_code": track_identity_codes.get(track.track_id)}
-            )
-            for track in active_tracks
-        ]
 
         drafts = discover_events_from_data(
             tracks_data=_serialize_tracks_for_events(active_tracks),
@@ -622,7 +634,9 @@ def process_live_frame(
         )
 
         detection_summary_lines = [
-            f"{(d.track_code + ' ') if d.track_code else ''}{d.class_name} ({int(round(d.confidence * 100))}%)"
+            f"{(d.identity_code + ' · ') if d.identity_code else ''}"
+            f"{(d.track_code + ' ') if d.track_code else ''}"
+            f"{d.class_name} ({int(round(d.confidence * 100))}%)"
             for d in frame_detections
         ]
 
@@ -743,15 +757,6 @@ def get_live_session_status_payload(
         runtime = _active_live_sessions.get(session_row.id)
 
     active_tracks = _build_track_summaries(runtime) if runtime is not None else []
-    track_identity_codes = get_track_identity_codes(
-        db,
-        source_type="live_session",
-        source_id=session_row.id,
-    )
-    active_tracks = [
-        track.model_copy(update={"identity_code": track_identity_codes.get(track.track_id)})
-        for track in active_tracks
-    ]
     events = (
         db.query(LiveEvent)
         .filter(LiveEvent.session_id == session_row.id, LiveEvent.user_id == session_row.user_id)
@@ -802,6 +807,7 @@ def stop_live_session(
             runtime.track_map.clear()
             runtime.frame_ts_map.clear()
             runtime.emitted_event_keys.clear()
+            runtime.identity_matcher = None
             runtime.zone_engine.reset()
             runtime.tracker = None
     latest_frame = (get_settings().resolved_live_dir / session_row.id / "latest.jpg").resolve()

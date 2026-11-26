@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ class Settings(BaseSettings):
     upload_dir: str = "../storage/uploads"
     processed_dir: str = "../storage/processed"
     evidence_dir: str = "../storage/evidence"
+    identity_evidence_dir: str = "../storage/identities"
     reports_dir: str = "../storage/reports"
     live_dir: str = "../storage/live"
     playback_dir: str = "../storage/playback"
@@ -48,6 +50,9 @@ class Settings(BaseSettings):
     detection_image_size: int = 416
     detection_device: str = "cpu"
     tracker_config: str = "bytetrack.yaml"
+    identity_person_similarity_threshold: float = Field(default=0.90, ge=0.70, le=1.0)
+    identity_object_similarity_threshold: float = Field(default=0.92, ge=0.70, le=1.0)
+    identity_match_margin: float = Field(default=0.08, ge=0.0, le=0.5)
 
     model_config = SettingsConfigDict(
         env_file=str(BACKEND_DIR / ".env"),
@@ -91,6 +96,14 @@ class Settings(BaseSettings):
     def resolved_evidence_dir(self) -> Path:
         """Resolve evidence storage path relative to the backend directory."""
         raw_path = Path(self.evidence_dir)
+        resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
+
+    @property
+    def resolved_identity_evidence_dir(self) -> Path:
+        """Resolve anonymous identity appearance evidence storage."""
+        raw_path = Path(self.identity_evidence_dir)
         resolved = raw_path if raw_path.is_absolute() else (BACKEND_DIR / raw_path).resolve()
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved

@@ -7,6 +7,7 @@ export interface OverlayDetection {
   track_id?: number | null
   track_code?: string | null
   identity_code?: string | null
+  identity_status?: 'confirmed' | 'probable' | 'unknown' | null
 }
 
 interface LabelPlacement {
@@ -67,19 +68,20 @@ function placeLabels(
       const classText = classLabel(detection.class_name)
       const trackText =
         settings.showTrackIds && detection.track_id !== null && detection.track_id !== undefined
-          ? detection.identity_code || detection.track_code || ''
+          ? detection.track_code || ''
           : ''
-      const confidenceText = [
-        settings.showTrackIds && detection.identity_code && detection.track_code
-          ? `Track ${detection.track_code}`
-          : '',
-        settings.showConfidence ? `${Math.round(detection.confidence * 100)}% confidence` : '',
-      ].filter(Boolean).join(' · ')
+      const identityText = detection.identity_code
+        ? `${detection.identity_code}${detection.identity_status && detection.identity_status !== 'confirmed' ? ` (${detection.identity_status})` : ''}`
+        : ''
+      const confidenceText = settings.showConfidence
+        ? `${Math.round(detection.confidence * 100)}% confidence`
+        : ''
       const compactConfidence = settings.showConfidence
         ? `${Math.round(detection.confidence * 100)}%`
         : ''
       const mainText = [
         classText,
+        identityText,
         trackText,
         settings.labelMode === 'compact' ? compactConfidence : '',
       ].filter(Boolean).join(' · ')

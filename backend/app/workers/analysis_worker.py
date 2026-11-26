@@ -10,8 +10,8 @@ from app.models.analysis import Analysis
 from app.models.detection import Detection
 from app.models.track import Track
 from app.models.video import Video
+from app.services.identity_engine import recognize_recorded_analysis
 from app.services.tracker import track_objects_in_analysis
-from app.services.identity_engine import associate_recorded_track_appearances
 from app.services.video_processor import extract_video_frames
 
 logger = logging.getLogger(__name__)
@@ -128,13 +128,6 @@ def run_video_analysis_job(
             progress_callback=on_track_progress,
         )
 
-        associate_recorded_track_appearances(
-            db,
-            user_id=analysis.user_id,
-            analysis_id=analysis.id,
-            profiles=tracking_result.appearance_profiles,
-        )
-
         # Persist per-frame detections (with track_id) and temporal track summaries in SQLite
         db.query(Detection).filter(Detection.analysis_id == analysis.id).delete()
         db.query(Track).filter(Track.analysis_id == analysis.id).delete()
@@ -181,6 +174,19 @@ def run_video_analysis_job(
         ]
         if track_rows:
             db.add_all(track_rows)
+
+        identity_summary = recognize_recorded_analysis(
+            db=db,
+            analysis_id=analysis.id,
+            user_id=analysis.user_id,
+            analysis_dir=output_dir,
+        )
+        logger.info(
+            "Analysis %s identity registry: %s people, %s objects",
+            analysis.id,
+            identity_summary["total_unique_people"],
+            identity_summary["total_unique_objects"],
+        )
 
         video.status = "completed"
         analysis.status = "completed"

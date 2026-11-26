@@ -1,116 +1,168 @@
 # NEMESIS-X
 
-**Contextual AI Video Intelligence for Real-Time Anomaly Detection, Bilingual Alerts & Automated Evidence Reporting**
+NEMESIS-X is a video intelligence application for analyzing recorded footage and live webcam sessions. It combines object detection and tracking with temporal events, evidence review, and investigation tools.
 
----
+## Features
 
-## Objective
+- **Video analysis:** Detect and track objects in uploaded recordings, with timestamped detections and evidence.
+- **Live monitoring:** Analyze webcam sessions and display current detections and events.
+- **Behaviour intelligence:** Review movement patterns, repeated interactions, explainable anomaly scores, and session-scoped baselines.
+- **Smart zones:** Define normalized polygon zones and review confirmed entries, exits, and time-in-zone events.
+- **Investigation workspace:** Link existing analyses and completed live sessions; review timelines, track relationships, evidence, and private notes.
+- **Intelligent search and labels:** Search stored video intelligence and display detection classes, tracking IDs, and confidence on frames.
+- **Persistent anonymous identities:** Compare appearance descriptors within one analysis or live session. This does not identify real-world people or match identities across videos.
+- **Playback compatibility:** Create a separate browser-compatible playback copy when a source video codec is unsupported; the original upload is preserved.
+- **Kannada and English notifications:** Use the available voice notification features and saved preferences.
 
-NEMESIS-X is an AI-powered video intelligence system designed to detect unusual events through multi-stage **object detection**, **multi-object tracking**, **temporal analysis**, and **contextual reasoning**. Rather than relying solely on isolated frame classifications, NEMESIS-X understands how scenes evolve over time to surface meaningful anomalies and produce:
+## Technology
 
-- **Timestamped Visual Evidence** — Annotated keyframes and video clips capturing detected events.
-- **Real-Time Bilingual Alerts** — Actionable notifications delivered in both **Kannada** and **English**.
-- **Intelligent Video Reports** — Structured incident summaries with context, severity, timelines, and supporting evidence.
+| Area | Technologies |
+| --- | --- |
+| Frontend | React, TypeScript, Vite, Tailwind CSS |
+| Backend | Python, FastAPI, SQLAlchemy |
+| Video intelligence | OpenCV, Ultralytics YOLO, ByteTrack |
+| Database | SQLite by default |
+| Authentication | JWT bearer tokens |
 
----
+## Requirements
 
-## Behaviour Intelligence
+- Python 3.10 or later
+- Node.js 20.19+ or 22.12+
+- npm
+- A webcam for live monitoring
 
-The authenticated Behaviour Intelligence workspace combines tracked image-plane movement summaries with the existing temporal interaction and event pipeline for recorded analyses and live webcam sessions. It exposes movement direction changes, walking-/running-like estimates, repeated interactions, explainable anomaly scores, event correlations, and supporting evidence.
+The backend defaults to CPU inference. The YOLO weights may be downloaded the first time a model is used.
 
-Scores reweight the existing explainable components using configurable per-session weights (which must sum to 1); events without a stored score breakdown are not assigned one. Movement speeds are normalized image coordinates per second, not physical speeds. Session baselines are configurable descriptive rules, remain scoped to their video or live session, and explicitly report when history is insufficient; no statistical learning model is claimed.
+## Setup
 
-The API is available under `/api/v1/behavior`: use `/analysis/{analysis_id}` or `/live/{session_id}` for reports, their `/sequences`, `/anomalies`, and `/summary` subroutes for filtered records and summaries, and the corresponding `/baseline` `PUT` route to save per-session rules. All endpoints enforce authenticated user ownership.
+Clone the repository:
 
-## Smart Zone Intelligence
+```bash
+git clone https://github.com/Chandanaa-003/NEMESIS-X.git
+cd NEMESIS-X
+```
 
-Smart Zones stores polygon vertices as normalized `[x, y]` values under exactly one owned video or live session. The frame editor supports restricted, safe, monitoring, entry, and exit areas, color, confirmation frames, event cooldown, loiter duration, restricted-group size, and alert preferences. CPU-friendly polygon checks reuse existing YOLO and ByteTrack outputs; transitions require the configured consecutive tracked observations, and an untracked detection cannot generate a zone event.
+### Backend
 
-Completed video zone events are generated alongside existing events by `POST /api/v1/analysis/{analysis_id}/discover-events`; live zones are evaluated as tracked frames arrive. Existing event/evidence persistence stores recorded annotated frames and live annotated snapshots. A loitering event reports observed zone duration only and does not infer intent. Live track/zone state is isolated per session and cleared when monitoring stops.
+In PowerShell:
 
-The authenticated zone API includes `POST /api/v1/zones`, `GET /api/v1/zones` (optional `video_id` or `live_session_id`), `PATCH /api/v1/zones/{zone_id}`, `DELETE /api/v1/zones/{zone_id}`, and source-specific `/analysis/{analysis_id}/events|activity`, `/live/{session_id}/events|activity`, and `/video/{video_id}/activity` routes under `/api/v1/zones`. The latest live preview is available only to its session owner at `/api/v1/live/{session_id}/latest-frame`.
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+```
 
-## Investigation Workspace
+If PowerShell prevents virtual environment activation, either allow local scripts for your user or run the environment's Python directly, for example `.\.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 
-The authenticated Investigation Workspace links existing completed video analyses and stopped live monitoring sessions without copying or changing their source media. Active live sessions cannot be linked as completed investigations. Investigations have private notes and an Open, Reviewing, or Closed status. Tracks, events, and notes are scoped to a linked source; a repeated track ID in another source is a different track and is never treated as a shared identity. Track labels include the entity category and source context.
+On macOS or Linux:
 
-The API is under `/api/v1/investigations`. It supports investigation create/list/detail/update/delete, linking and unlinking sources, searching tracks and loading source-scoped track details, linking and unlinking events and tracks, filtered/paginated timelines, relationship graphs, evidence references, and private note create/update/delete. Timeline filters include source, event category, source-scoped track ID, severity, and date. Date filters use the analysis creation date or live-session start date; video timestamps remain source-relative and different sources are not synchronized. The graph only represents stored event associations and explicitly recorded person/object track references; uncertain links retain their uncertainty and unsupported relationships are not inferred.
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+test -f .env || cp .env.example .env
+```
 
-Investigation records and links are stored in the `investigations`, `investigation_sources`, `investigation_events`, `investigation_tracks`, and `investigation_notes` tables. This project initializes new tables through its existing SQLAlchemy `create_all` startup path and does not currently use Alembic migrations. All investigation and linked-source operations enforce authenticated ownership. Deleting an investigation removes only its private notes and links; it does not delete the original analyses, events, videos, or evidence.
+The backend reads configuration from `backend/.env`. The defaults use SQLite and local storage. Before exposing the application beyond local development, set a private `SECRET_KEY`, review CORS origins, and configure storage appropriately. Do not commit `.env` files or credentials.
 
-Live investigation data is limited to persisted live events, snapshots, and recent track samples available from the source session. A continuous live recording is not claimed or reconstructed. Evidence is served through existing authenticated evidence endpoints; original evidence files and uploaded videos remain unchanged. User-written investigation notes are distinct from system-generated event explanations; note edit history is not available.
+### Frontend
 
-## Intelligent Video Search and Object Labels
+Open a second terminal at the repository root:
 
-The authenticated Intelligent Video Search workspace searches stored recorded detections, tracks, events, persisted live events, recent live track samples, and evidence references. Deterministic parsing supports source-local `T001` track codes (and `P001`/`O001` person/object role filters), common object classes, interaction/pickup/unattended/zone/anomaly terms, and source-relative `MM:SS` or `HH:MM:SS` ranges. Unrecognized searches return supported filter guidance. Search is database-backed, does not send media to an external service, and limits each request to a bounded set of stored candidates. Live results only reflect persisted session data; continuous live video is not archived.
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-The API is available at `/api/v1/search/intelligence` and `/api/v1/search/tracks`; both require authentication and apply owner/source filters. Search results include matching track labels, timestamps, confidence/severity where stored, and existing evidence URLs. Recorded results can open the original video and seek to the stored event timestamp; live sessions without archived video expose their saved evidence instead.
+The frontend defaults to the API at `http://127.0.0.1:8000/api/v1`. To use another backend URL, set `VITE_API_BASE_URL` before starting Vite, for example in PowerShell:
 
-Recorded extracted frames, synchronized track playback, and live processed-frame previews share configurable object overlays. Labels use actual backend classes, confidence values, and ByteTrack IDs, with category colors, collision-aware placement, compact/detailed modes, and controls for original/annotated view, labels, IDs, confidence, and boxes. Live labels are drawn over the exact captured frame associated with the returned detection set. Overlays are rendered in the browser and do not modify uploaded videos or evidence files.
+```powershell
+$env:VITE_API_BASE_URL = "http://127.0.0.1:8000/api/v1"
+npm run dev
+```
 
-## Persistent Identity Recognition
+## Run the application
 
-The Unique Entity Intelligence workspace (`/dashboard/identities`) groups tracker fragments only within the selected recorded analysis or live session. It preserves original `T###` track IDs while assigning independent anonymous `P###` and `O###` labels. It supports filtering by identity, tracker ID, category, and appearance count; viewing stored track evidence and related events; and owner-authorized manual reassignment or separation.
+Start the backend from the `backend` directory:
 
-Automatic comparisons use lightweight CPU-only HSV color, brightness, edge-orientation, and shape descriptors. Person crops exclude their upper 18% and no face recognition, external service, or trained re-identification model is used. Person/object match cutoffs are heuristic similarity scores (0.87/0.92) with ambiguity margins (0.05/0.08); they are not calibrated probabilities. Automatically linked identities remain marked probable, while weak, blurry, ambiguous, or non-distinctive object appearances remain separate or unknown. A visual match is not proof of identity.
+```bash
+python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-The authenticated API is under `/api/v1/identities`: list/search one source with `GET /`, aggregate counts with `GET /counts`, inspect a record with `GET /{identity_id}`, correct a tracker association with `PATCH /{identity_id}/tracks/{track_id}`, and retrieve its stored appearance evidence with `GET /{identity_id}/tracks/{track_id}/evidence`. Source and user ownership are checked for every operation. Identity records use the existing SQLAlchemy startup table-creation path; original recordings and track IDs are not modified. No cross-video or cross-session identity recognition is claimed.
+Start the frontend from the `frontend` directory in another terminal:
 
-## Browser-Compatible Investigation Playback
+```bash
+npm run dev
+```
 
-Saved-video playback checks the source container, codecs, pixel format, and MP4 fast-start metadata before loading it. Compatible H.264/yuv420p MP4 files with AAC audio (or no audio) play directly; other supported inputs get a separate H.264/yuv420p MP4 copy with optional AAC audio and fast-start metadata under the configured playback directory. The upload is never overwritten. The authenticated API uses `POST /api/v1/videos/{video_id}/playback/prepare`, `GET /api/v1/videos/{video_id}/playback/status`, and `GET /api/v1/videos/{video_id}/playback`. Conversion failure or missing FFmpeg is shown explicitly and leaves evidence-frame navigation available. FFmpeg is provided by the `imageio-ffmpeg` backend dependency. Video object URLs are created after playback data loads and revoked only when the owning component is cleaned up, avoiding premature revocation under React Strict Mode.
+Open:
 
-Run the backend from `backend/` with `python -m uvicorn app.main:app --reload`; run the frontend from `frontend/` with `npm run dev`. Validate the backend with `python -m pytest tests -q` and build the frontend with `npm run build`.
+- Frontend: <http://127.0.0.1:5173>
+- API health: <http://127.0.0.1:8000/api/v1/health>
+- Interactive API documentation: <http://127.0.0.1:8000/docs>
 
----
+The backend initializes the database schema on startup. By default, its SQLite database and media are stored locally; keep backups of data you want to retain.
 
-## Planned Technology Stack
+## Tests and checks
 
-| Layer | Planned Technologies |
-| :--- | :--- |
-| **Frontend** | React / Next.js (or Vite + React), TypeScript, Tailwind CSS |
-| **Backend API** | Python, FastAPI, Uvicorn, Pydantic |
-| **Computer Vision & Tracking** | OpenCV, Ultralytics YOLO (Object Detection), ByteTrack / DeepSORT (Tracking) |
-| **Temporal & Contextual Reasoning** | Multimodal Vision-Language Models (VLMs) / LLMs, Temporal Event Pipeline |
-| **Alerts & Localization** | Real-time WebSockets / SSE, English & Kannada Alert Generation |
-| **Storage & Reporting** | Local Media Pipeline (`storage/`), JSON / SQLite Metadata, PDF / Markdown Report Generator |
+Run backend tests from `backend`:
 
----
+```bash
+python -m pip install pytest
+python -m pytest tests -q
+```
 
-## Project Structure
+Run frontend checks from `frontend`:
+
+```bash
+npm run lint
+npm run build
+```
+
+## API areas
+
+The API is versioned under `/api/v1`. Interactive endpoint details are available at `/docs`. Main areas include:
+
+- `/auth` — account and token operations
+- `/videos` and `/analysis` — uploads, recorded analysis, and event discovery
+- `/live` — webcam monitoring
+- `/behavior` and `/zones` — behaviour reports and zone configuration/activity
+- `/investigations` — investigations, timelines, evidence references, and notes
+- `/search` and `/identities` — intelligence search and source-scoped anonymous identities
+
+Most analysis and evidence routes require authentication and enforce ownership of the related video or live session.
+
+## Important limitations
+
+- Person and object identity labels are anonymous and scoped to a single recording or live session. Appearance similarity is not proof of identity; facial recognition and cross-camera identity matching are not implemented.
+- Movement estimates use image coordinates. They are not physical speeds unless camera calibration is available.
+- Live investigation data is limited to persisted events, snapshots, and track samples; continuous live video is not necessarily retained.
+- Anomaly and behaviour scores are explainable rule-based indicators, not determinations of intent or a trained statistical model.
+- Browser-compatible playback is stored separately from the original upload.
+
+## Project layout
 
 ```text
 NEMESIS-X/
-├── frontend/             # Web dashboard for video upload, live alerts, evidence & reports
-├── backend/              # FastAPI server, CV detection/tracking, temporal & VLM reasoning
-├── storage/              # Local runtime workspace for media & generated outputs
-│   ├── uploads/          # Raw incoming video files
-│   ├── processed/        # Annotated videos and intermediate frame extractions
-│   ├── evidence/         # Timestamped keyframes and anomaly clips
-│   └── reports/          # Generated incident and video intelligence reports
-├── docs/                 # Architecture diagrams, API specs, and hackathon documentation
-├── .env.example          # Environment variable template
-├── .gitignore            # Git ignore rules for envs, caches, node_modules, and media
-├── LICENSE               # Project license
-└── README.md             # Project overview and roadmap
+├── backend/
+│   ├── app/          # FastAPI routes, models, services, and workers
+│   ├── tests/        # Backend tests
+│   ├── weights/      # Local model weights
+│   ├── .env.example  # Backend configuration template
+│   └── requirements.txt
+├── frontend/
+│   └── src/          # React application
+├── storage/          # Local uploads, evidence, and generated media
+├── docs/             # Project documentation
+└── README.md
 ```
 
----
+## License
 
-## Development Roadmap
-
-- **Phase 1 — Foundation & Ingestion**
-  - Establish project structure, environment configuration, and local storage pipeline.
-  - Build video upload and frame-sampling endpoints in the backend.
-- **Phase 2 — Detection, Tracking & Temporal Analysis**
-  - Integrate object detection and persistent multi-object tracking across frames.
-  - Implement temporal sliding-window analysis to identify unusual motion, loitering, or behavioral shifts.
-- **Phase 3 — Contextual Reasoning & Bilingual Alerts**
-  - Connect contextual VLM/LLM reasoning to validate anomalies and reduce false positives.
-  - Generate real-time alerts in both **Kannada** and **English**.
-- **Phase 4 — Evidence Extraction & Intelligent Reporting**
-  - Capture timestamped visual evidence snapshots/clips in `storage/evidence/`.
-  - Export structured incident reports into `storage/reports/`.
-- **Phase 5 — Frontend Dashboard & Demo Polish**
-  - Build interactive UI in `frontend/` for timeline playback, live bilingual alert feeds, evidence review, and report downloads.
-  - End-to-end testing, latency tuning, and hackathon presentation readiness.
+See [LICENSE](LICENSE).

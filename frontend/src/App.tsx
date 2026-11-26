@@ -11,6 +11,7 @@ import { EventTimelinePage } from './pages/EventTimelinePage'
 import { EvidenceCenterPage } from './pages/EvidenceCenterPage'
 import { HomePage } from './pages/HomePage'
 import { InvestigationWorkspacePage } from './pages/InvestigationWorkspacePage'
+import { IdentityIntelligencePage } from './pages/IdentityIntelligencePage'
 import { IntelligentVideoSearchPage } from './pages/IntelligentVideoSearchPage'
 import { LiveMonitoringPage } from './pages/LiveMonitoringPage'
 import { LoginPage } from './pages/LoginPage'
@@ -20,7 +21,6 @@ import { NotFoundPage } from './pages/NotFoundPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { SmartZoneManagementPage } from './pages/SmartZoneManagementPage'
-import { UniqueEntityIntelligencePage } from './pages/UniqueEntityIntelligencePage'
 
 function ScrollManager() {
   const { pathname, hash } = useLocation()
@@ -81,7 +81,7 @@ export function App() {
                 <Route path="/dashboard/investigations" element={<InvestigationWorkspacePage />} />
                 <Route path="/dashboard/investigations/:investigationId" element={<InvestigationWorkspacePage />} />
                 <Route path="/dashboard/search" element={<IntelligentVideoSearchPage />} />
-                <Route path="/dashboard/identities" element={<UniqueEntityIntelligencePage />} />
+                <Route path="/dashboard/identities" element={<IdentityIntelligencePage />} />
                 <Route path="/dashboard/history" element={<MonitoringHistoryPage />} />
                 <Route
                   path="/dashboard/analytics"

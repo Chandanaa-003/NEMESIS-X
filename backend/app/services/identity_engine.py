@@ -1,1029 +1,979 @@
-from dataclasses import dataclass
-import logging
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import json
 import math
+import os
 from pathlib import Path
-import threading
-from typing import Any, Literal
 import uuid
+from typing import Any, Literal
 
 import cv2
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
-from app.models.identity import EntityIdentity, IdentityTrackAssociation
+from app.config import BACKEND_DIR, get_settings
+from app.models.identity import EntityIdentity, IdentityObservation
 
-logger = logging.getLogger(__name__)
-SourceType = Literal["analysis", "live_session"]
-PERSON_MATCH_THRESHOLD = 0.87
-OBJECT_MATCH_THRESHOLD = 0.92
-PERSON_UNCERTAIN_THRESHOLD = 0.68
-OBJECT_UNCERTAIN_THRESHOLD = 0.76
-PERSON_AMBIGUITY_MARGIN = 0.05
-OBJECT_AMBIGUITY_MARGIN = 0.08
-_identity_lock = threading.RLock()
+IdentitySourceType = Literal["analysis", "live_session"]
+IdentityEntityType = Literal["person", "object"]
+IdentityStatus = Literal["confirmed", "probable", "unknown"]
+Signature = dict[str, Any]
+
+_FEATURE_REFERENCE = "hsv_color_shape_v1"
+_PERSON_CROP_QUALITY = 0.20
+_PERSON_DISTINCTIVENESS = 0.12
+_OBJECT_CROP_QUALITY = 0.25
+_OBJECT_DISTINCTIVENESS = 0.22
+
+
+@dataclass
+class IdentityProfile:
+    id: str
+    identity_code: str
+    entity_type: IdentityEntityType
+    class_name: str
+    status: IdentityStatus
+    first_seen_timestamp: float
+    last_seen_timestamp: float
+    appearance_count: int
+    associated_track_ids: list[int]
+    appearance_signature: Signature | None
+    last_position: dict[str, float] | None
+    matching_confidence: float
+    matching_explanation: str
+    evidence_refs: list[str] = field(default_factory=list)
+    track_intervals: dict[int, tuple[float, float]] = field(default_factory=dict)
+    is_new: bool = False
 
 
 @dataclass(frozen=True)
-class TrackAppearanceProfile:
-    track_id: int
-    category: str
-    first_seen_timestamp: float
-    last_seen_timestamp: float
-    detection_count: int
-    descriptor: dict[str, Any] | None
-    descriptor_sample_count: int
-    evidence_filename: str | None
-
-    @property
-    def entity_type(self) -> Literal["person", "object"]:
-        return "person" if self.category.casefold() == "person" else "object"
+class IdentityAssignment:
+    profile: IdentityProfile
+    match_confidence: float
+    explanation: str
+    is_new_identity: bool
+    is_new_track: bool
 
 
-def _entity_crop(
+def _entity_type(class_name: str) -> IdentityEntityType:
+    return "person" if class_name.strip().lower() == "person" else "object"
+
+
+def extract_appearance_signature(
     frame: np.ndarray,
-    bbox: tuple[float, float, float, float],
-    entity_type: str,
-) -> tuple[np.ndarray, float] | None:
-    if frame.ndim != 3 or frame.shape[2] != 3:
+    bbox: dict[str, float] | Any,
+    class_name: str,
+) -> Signature | None:
+    """Build a CPU-only clothing/object color and shape descriptor; no face features are used."""
+    if frame is None or frame.ndim != 3 or frame.size == 0:
         return None
     height, width = frame.shape[:2]
-    x1, y1, x2, y2 = bbox
-    left = max(0, min(width, int(math.floor(x1))))
-    right = max(0, min(width, int(math.ceil(x2))))
-    top = max(0, min(height, int(math.floor(y1))))
-    bottom = max(0, min(height, int(math.ceil(y2))))
-    box_width = right - left
-    box_height = bottom - top
-    if box_width < 16 or box_height < 20:
+    try:
+        x1 = max(0, min(width, int(math.floor(float(bbox["x1"] if isinstance(bbox, dict) else bbox.x1)))))
+        y1 = max(0, min(height, int(math.floor(float(bbox["y1"] if isinstance(bbox, dict) else bbox.y1)))))
+        x2 = max(0, min(width, int(math.ceil(float(bbox["x2"] if isinstance(bbox, dict) else bbox.x2)))))
+        y2 = max(0, min(height, int(math.ceil(float(bbox["y2"] if isinstance(bbox, dict) else bbox.y2)))))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if x2 <= x1 or y2 <= y1:
         return None
 
-    crop_top = top + int(box_height * 0.18) if entity_type == "person" else top
-    crop = frame[crop_top:bottom, left:right]
-    if crop.size == 0:
-        return None
-    quality = min(1.0, math.sqrt((box_width * box_height) / 4096.0))
-    return crop, quality
-
-
-def extract_appearance_descriptor(
-    frame: np.ndarray,
-    bbox: tuple[float, float, float, float],
-    category: str,
-    confidence: float = 1.0,
-) -> dict[str, Any] | None:
-    """Create a small CPU-only color/texture/shape signature; no facial features are used."""
-    entity_type = "person" if category.casefold() == "person" else "object"
-    crop_info = _entity_crop(frame, bbox, entity_type)
-    if crop_info is None:
-        return None
-    crop, size_quality = crop_info
+    box_width = x2 - x1
+    box_height = y2 - y1
+    if _entity_type(class_name) == "person":
+        x1 += int(box_width * 0.12)
+        x2 -= int(box_width * 0.12)
+        y1 += int(box_height * 0.22)
+        y2 -= int(box_height * 0.05)
+    crop = frame[y1:y2, x1:x2]
     crop_height, crop_width = crop.shape[:2]
     if crop_width < 12 or crop_height < 12:
         return None
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    histogram = cv2.calcHist([hsv], [0, 1], None, [8, 4], [0, 180, 0, 256]).reshape(-1)
+    histogram_sum = float(histogram.sum())
+    if histogram_sum <= 0:
+        return None
+    normalized_histogram = histogram.astype(np.float32) / histogram_sum
+    nonzero = normalized_histogram[normalized_histogram > 0]
+    entropy = float(-(nonzero * np.log(nonzero)).sum() / math.log(len(normalized_histogram)))
+
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    hsv_hist = cv2.calcHist([hsv], [0, 1], None, [12, 4], [0, 180, 0, 256]).reshape(-1)
-    value_hist = cv2.calcHist([hsv], [2], None, [8], [0, 256]).reshape(-1)
-    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
-    magnitude, angle = cv2.cartToPolar(grad_x, grad_y, angleInDegrees=True)
-    edge_hist, _ = np.histogram(
-        angle,
-        bins=8,
-        range=(0.0, 360.0),
-        weights=magnitude,
-    )
+    sharpness = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+    crop_area = crop_width * crop_height
+    size_quality = min(1.0, math.sqrt(crop_area / float(48 * 48)))
+    quality = min(1.0, size_quality * min(1.0, sharpness / 30.0))
 
-    def normalized(values: np.ndarray) -> list[float]:
-        total = float(values.sum())
-        if total <= 0:
-            return [0.0] * len(values)
-        return [round(float(value) / total, 6) for value in values]
-
-    def normalized_entropy(values: list[float]) -> float:
-        probabilities = np.asarray(values, dtype=np.float64)
-        probabilities = probabilities[probabilities > 0]
-        if probabilities.size < 2:
-            return 0.0
-        entropy = -float(np.sum(probabilities * np.log(probabilities)))
-        return min(1.0, entropy / math.log(len(values)))
-
-    color_hist = normalized(hsv_hist)
-    normalized_value_hist = normalized(value_hist)
-    normalized_edge_hist = normalized(edge_hist.astype(np.float32))
-    distinctiveness = max(
-        normalized_entropy(color_hist),
-        normalized_entropy(normalized_value_hist),
-        normalized_entropy(normalized_edge_hist),
-    )
-
-    top_hist: list[float] = []
-    bottom_hist: list[float] = []
-    if entity_type == "person":
-        split = max(1, crop_height // 2)
-        top_hsv = cv2.cvtColor(crop[:split], cv2.COLOR_BGR2HSV)
-        bottom_hsv = cv2.cvtColor(crop[split:], cv2.COLOR_BGR2HSV)
-        top_hist = normalized(
-            cv2.calcHist([top_hsv], [0, 1], None, [12, 4], [0, 180, 0, 256]).reshape(-1)
-        )
-        bottom_hist = normalized(
-            cv2.calcHist([bottom_hsv], [0, 1], None, [12, 4], [0, 180, 0, 256]).reshape(-1)
-        )
-
-    box_height = max(1.0, bbox[3] - bbox[1])
-    box_width = max(1.0, bbox[2] - bbox[0])
     return {
-        "version": 1,
-        "hsv_hist": color_hist,
-        "value_hist": normalized_value_hist,
-        "edge_hist": normalized_edge_hist,
-        "top_hist": top_hist,
-        "bottom_hist": bottom_hist,
-        "aspect_ratio": round(box_width / box_height, 5),
-        "quality": round(size_quality * min(1.0, max(0.0, confidence)), 4),
-        "distinctiveness": round(distinctiveness, 4),
+        "histogram": [round(float(value), 6) for value in normalized_histogram],
+        "aspect_ratio": round(float(crop_width / max(crop_height, 1)), 4),
+        "quality": round(quality, 4),
+        "distinctiveness": round(max(0.0, min(1.0, entropy)), 4),
     }
 
 
-def average_appearance_descriptors(
-    descriptors: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    valid = [item for item in descriptors if item and item.get("version") == 1]
-    if not valid:
+def aggregate_signatures(signatures: list[Signature]) -> Signature | None:
+    usable = [
+        signature
+        for signature in signatures
+        if isinstance(signature.get("histogram"), list)
+        and len(signature["histogram"]) == 32
+        and float(signature.get("quality", 0.0)) > 0
+    ]
+    if not usable:
         return None
-    result: dict[str, Any] = {"version": 1}
-    for key in ("hsv_hist", "value_hist", "edge_hist", "top_hist", "bottom_hist"):
-        vectors = [np.asarray(item[key], dtype=np.float64) for item in valid if item.get(key)]
-        if not vectors:
-            result[key] = []
-            continue
-        mean = np.mean(vectors, axis=0)
-        total = float(mean.sum())
-        result[key] = [round(float(value) / total, 6) for value in mean] if total > 0 else []
-    result["aspect_ratio"] = round(
-        sum(float(item["aspect_ratio"]) for item in valid) / len(valid),
-        5,
-    )
-    result["quality"] = round(
-        sum(float(item.get("quality", 0.0)) for item in valid) / len(valid),
-        4,
-    )
-    result["distinctiveness"] = round(
-        sum(float(item.get("distinctiveness", 0.0)) for item in valid) / len(valid),
-        4,
-    )
-    return result
+    weights = np.asarray([float(item["quality"]) for item in usable], dtype=np.float32)
+    histograms = np.asarray([item["histogram"] for item in usable], dtype=np.float32)
+    histogram = np.average(histograms, axis=0, weights=weights)
+    histogram /= max(float(histogram.sum()), 1e-8)
+    return {
+        "histogram": [round(float(value), 6) for value in histogram],
+        "aspect_ratio": round(
+            float(np.average([float(item["aspect_ratio"]) for item in usable], weights=weights)), 4
+        ),
+        "quality": round(float(np.average([float(item["quality"]) for item in usable], weights=weights)), 4),
+        "distinctiveness": round(
+            float(np.average([float(item["distinctiveness"]) for item in usable], weights=weights)), 4
+        ),
+    }
 
 
-def _histogram_intersection(left: Any, right: Any) -> float:
-    try:
-        left_values = np.asarray(left, dtype=np.float64)
-        right_values = np.asarray(right, dtype=np.float64)
-        if left_values.shape != right_values.shape or left_values.size == 0:
-            return 0.0
-        return float(np.minimum(left_values, right_values).sum())
-    except (TypeError, ValueError):
+def appearance_similarity(left: Signature, right: Signature) -> float:
+    left_hist = np.asarray(left.get("histogram", []), dtype=np.float32)
+    right_hist = np.asarray(right.get("histogram", []), dtype=np.float32)
+    if left_hist.shape != (32,) or right_hist.shape != (32,):
         return 0.0
-
-
-def appearance_similarity(
-    left: dict[str, Any] | None,
-    right: dict[str, Any] | None,
-    entity_type: str,
-) -> float:
-    """Return a documented heuristic similarity (not a probability or identity proof)."""
-    if not left or not right or left.get("version") != 1 or right.get("version") != 1:
+    denominator = float(np.linalg.norm(left_hist) * np.linalg.norm(right_hist))
+    if denominator <= 0:
         return 0.0
-    color = _histogram_intersection(left.get("hsv_hist"), right.get("hsv_hist"))
-    value = _histogram_intersection(left.get("value_hist"), right.get("value_hist"))
-    texture = _histogram_intersection(left.get("edge_hist"), right.get("edge_hist"))
-    try:
-        left_aspect = max(0.01, float(left["aspect_ratio"]))
-        right_aspect = max(0.01, float(right["aspect_ratio"]))
-        shape = math.exp(-abs(math.log(left_aspect / right_aspect)))
-    except (KeyError, TypeError, ValueError):
-        shape = 0.0
-
-    if entity_type == "person":
-        top = _histogram_intersection(left.get("top_hist"), right.get("top_hist"))
-        bottom = _histogram_intersection(left.get("bottom_hist"), right.get("bottom_hist"))
-        appearance = 0.45 * color + 0.25 * top + 0.20 * bottom + 0.05 * value + 0.05 * texture
-        score = 0.92 * appearance + 0.08 * shape
-    else:
-        appearance = 0.65 * color + 0.20 * value + 0.15 * texture
-        score = 0.80 * appearance + 0.20 * shape
-    quality = min(float(left.get("quality", 0.0)), float(right.get("quality", 0.0)))
-    return round(max(0.0, min(1.0, score * math.sqrt(max(0.0, quality)))), 4)
+    color_similarity = max(0.0, min(1.0, float(np.dot(left_hist, right_hist) / denominator)))
+    left_ratio = max(float(left.get("aspect_ratio", 0.0)), 1e-4)
+    right_ratio = max(float(right.get("aspect_ratio", 0.0)), 1e-4)
+    shape_similarity = max(0.0, 1.0 - abs(math.log(left_ratio / right_ratio)))
+    return round(0.88 * color_similarity + 0.12 * shape_similarity, 4)
 
 
-def _thresholds(entity_type: str) -> tuple[float, float, float]:
-    if entity_type == "person":
+def _profile_from_row(row: EntityIdentity, observations: list[IdentityObservation]) -> IdentityProfile:
+    return IdentityProfile(
+        id=row.id,
+        identity_code=row.identity_code,
+        entity_type=row.entity_type,  # type: ignore[arg-type]
+        class_name=row.class_name,
+        status=row.status,  # type: ignore[arg-type]
+        first_seen_timestamp=row.first_seen_timestamp,
+        last_seen_timestamp=row.last_seen_timestamp,
+        appearance_count=row.appearance_count,
+        associated_track_ids=list(row.associated_track_ids or []),
+        appearance_signature=row.appearance_signature,
+        last_position=row.last_position,
+        matching_confidence=row.matching_confidence,
+        matching_explanation=row.matching_explanation,
+        evidence_refs=list(row.evidence_refs or []),
+        track_intervals={
+            int(item.track_id): (float(item.first_seen_timestamp), float(item.last_seen_timestamp))
+            for item in observations
+        },
+    )
+
+
+class IdentityMatcher:
+    """Source-local conservative matcher; appearance matches are always marked probable."""
+
+    def __init__(
+        self,
+        source_type: IdentitySourceType,
+        source_id: str,
+        profiles: list[IdentityProfile] | None = None,
+    ) -> None:
+        self.source_type = source_type
+        self.source_id = source_id
+        self.profiles = profiles or []
+        self._tracks: dict[int, IdentityProfile] = {
+            track_id: profile
+            for profile in self.profiles
+            for track_id in profile.associated_track_ids
+        }
+
+    @classmethod
+    def from_database(
+        cls,
+        db: Session,
+        source_type: IdentitySourceType,
+        source_id: str,
+        user_id: int,
+    ) -> IdentityMatcher:
+        rows = (
+            db.query(EntityIdentity)
+            .filter(
+                EntityIdentity.user_id == user_id,
+                EntityIdentity.source_type == source_type,
+                EntityIdentity.source_id == source_id,
+            )
+            .order_by(EntityIdentity.first_seen_timestamp.asc(), EntityIdentity.identity_code.asc())
+            .all()
+        )
+        observations = (
+            db.query(IdentityObservation)
+            .filter(
+                IdentityObservation.user_id == user_id,
+                IdentityObservation.source_type == source_type,
+                IdentityObservation.source_id == source_id,
+            )
+            .all()
+        )
+        observations_by_identity: dict[str, list[IdentityObservation]] = {}
+        for observation in observations:
+            observations_by_identity.setdefault(observation.identity_id, []).append(observation)
+        return cls(
+            source_type,
+            source_id,
+            [
+                _profile_from_row(row, observations_by_identity.get(row.id, []))
+                for row in rows
+            ],
+        )
+
+    def observe_existing_track(self, track_id: int, timestamp: float) -> IdentityProfile | None:
+        profile = self._tracks.get(track_id)
+        if profile is None:
+            return None
+        previous = profile.track_intervals.get(track_id)
+        if previous is not None:
+            profile.track_intervals[track_id] = (previous[0], max(previous[1], timestamp))
+        profile.last_seen_timestamp = max(profile.last_seen_timestamp, timestamp)
+        return profile
+
+    def assign(
+        self,
+        *,
+        track_id: int,
+        class_name: str,
+        signature: Signature | None,
+        first_seen_timestamp: float,
+        last_seen_timestamp: float,
+        first_position: dict[str, float] | None = None,
+        last_position: dict[str, float] | None = None,
+        evidence_ref: str | None = None,
+    ) -> IdentityAssignment:
+        existing_track = self._tracks.get(track_id)
+        if existing_track is not None:
+            self.observe_existing_track(track_id, last_seen_timestamp)
+            return IdentityAssignment(
+                existing_track,
+                existing_track.matching_confidence,
+                existing_track.matching_explanation,
+                False,
+                False,
+            )
+
+        kind = _entity_type(class_name)
+        candidates: list[tuple[float, IdentityProfile]] = []
+        enough_feature = signature is not None and self._feature_is_distinctive(signature, kind)
+        if enough_feature:
+            for profile in self.profiles:
+                if profile.entity_type != kind or profile.class_name.lower() != class_name.lower():
+                    continue
+                if self._has_overlapping_track(profile, first_seen_timestamp, last_seen_timestamp):
+                    continue
+                if profile.appearance_signature is None:
+                    continue
+                similarity = appearance_similarity(signature, profile.appearance_signature)
+                if kind == "object":
+                    if not profile.last_position or not first_position:
+                        continue
+                    gap = max(0.0, first_seen_timestamp - profile.last_seen_timestamp)
+                    tolerance = min(0.65, 0.08 + gap * 0.12)
+                    distance = math.hypot(
+                        float(profile.last_position["x"]) - float(first_position["x"]),
+                        float(profile.last_position["y"]) - float(first_position["y"]),
+                    )
+                    spatial_score = max(0.0, 1.0 - distance / max(tolerance, 0.08))
+                    similarity = 0.90 * similarity + 0.10 * spatial_score
+                candidates.append((similarity, profile))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+
+        threshold = self._threshold(kind)
+        ambiguous_match = False
+        if candidates and candidates[0][0] >= threshold:
+            best_score, best_profile = candidates[0]
+            second_score = candidates[1][0] if len(candidates) > 1 else 0.0
+            if best_score - second_score >= get_settings().identity_match_margin:
+                best_profile.associated_track_ids.append(track_id)
+                best_profile.appearance_count = len(set(best_profile.associated_track_ids))
+                best_profile.track_intervals[track_id] = (
+                    first_seen_timestamp,
+                    last_seen_timestamp,
+                )
+                best_profile.first_seen_timestamp = min(
+                    best_profile.first_seen_timestamp, first_seen_timestamp
+                )
+                best_profile.last_seen_timestamp = max(
+                    best_profile.last_seen_timestamp, last_seen_timestamp
+                )
+                best_profile.last_position = last_position or best_profile.last_position
+                best_profile.matching_confidence = best_score
+                best_profile.matching_explanation = (
+                    f"Possible appearance match: color/shape similarity {best_score:.2f} "
+                    f"meets the configured {threshold:.2f} threshold with a distinct candidate "
+                    "margin. No facial features are used; manual review is recommended."
+                )
+                best_profile.appearance_signature = _blend_signatures(
+                    best_profile.appearance_signature, signature
+                )
+                if evidence_ref:
+                    best_profile.evidence_refs.append(evidence_ref)
+                self._tracks[track_id] = best_profile
+                return IdentityAssignment(
+                    best_profile,
+                    best_score,
+                    best_profile.matching_explanation,
+                    False,
+                    True,
+                )
+            explanation = (
+                f"Unresolved appearance: the top similarity {best_score:.2f} is too close to "
+                f"another candidate ({second_score:.2f}); entities were kept separate."
+            )
+            confidence = best_score
+            ambiguous_match = True
+        elif not enough_feature:
+            explanation = (
+                "Unresolved appearance: the crop is too small, blurry, or visually "
+                "non-distinctive for a reliable automatic match."
+            )
+            confidence = candidates[0][0] if candidates else 0.0
+        elif candidates:
+            explanation = (
+                f"No source-local identity reached the configured {threshold:.2f} "
+                f"appearance threshold (best score {candidates[0][0]:.2f})."
+            )
+            confidence = candidates[0][0]
+        else:
+            explanation = (
+                "No prior non-overlapping source-local identity was a sufficiently distinctive "
+                "candidate; a new anonymous label was assigned to this track."
+            )
+            confidence = 0.0
+
+        profile = self._new_profile(
+            kind=kind,
+            class_name=class_name,
+            signature=signature if enough_feature else None,
+            first_seen_timestamp=first_seen_timestamp,
+            last_seen_timestamp=last_seen_timestamp,
+            last_position=last_position,
+            track_id=track_id,
+            status="probable" if enough_feature and not ambiguous_match else "unknown",
+            confidence=confidence,
+            explanation=explanation,
+            evidence_ref=evidence_ref,
+        )
+        self.profiles.append(profile)
+        self._tracks[track_id] = profile
+        return IdentityAssignment(profile, confidence, explanation, True, True)
+
+    @staticmethod
+    def _feature_is_distinctive(signature: Signature, kind: IdentityEntityType) -> bool:
+        quality = float(signature.get("quality", 0.0))
+        distinctiveness = float(signature.get("distinctiveness", 0.0))
+        minimum_quality = _PERSON_CROP_QUALITY if kind == "person" else _OBJECT_CROP_QUALITY
+        minimum_distinctiveness = (
+            _PERSON_DISTINCTIVENESS if kind == "person" else _OBJECT_DISTINCTIVENESS
+        )
+        return quality >= minimum_quality and distinctiveness >= minimum_distinctiveness
+
+    @staticmethod
+    def _has_overlapping_track(
+        profile: IdentityProfile, start: float, end: float
+    ) -> bool:
+        return any(
+            other_start <= end and other_end >= start
+            for other_start, other_end in profile.track_intervals.values()
+        )
+
+    @staticmethod
+    def _threshold(kind: IdentityEntityType) -> float:
+        settings = get_settings()
         return (
-            PERSON_MATCH_THRESHOLD,
-            PERSON_UNCERTAIN_THRESHOLD,
-            PERSON_AMBIGUITY_MARGIN,
+            settings.identity_person_similarity_threshold
+            if kind == "person"
+            else settings.identity_object_similarity_threshold
         )
-    return (
-        OBJECT_MATCH_THRESHOLD,
-        OBJECT_UNCERTAIN_THRESHOLD,
-        OBJECT_AMBIGUITY_MARGIN,
-    )
 
-
-def _next_identity_code(
-    db: Session,
-    source_type: SourceType,
-    source_id: str,
-    entity_type: str,
-) -> str:
-    prefix = "P" if entity_type == "person" else "O"
-    codes = (
-        db.query(EntityIdentity.identity_code)
-        .filter(
-            EntityIdentity.source_type == source_type,
-            EntityIdentity.source_id == source_id,
-            EntityIdentity.identity_code.like(f"{prefix}%"),
+    def _new_profile(
+        self,
+        *,
+        kind: IdentityEntityType,
+        class_name: str,
+        signature: Signature | None,
+        first_seen_timestamp: float,
+        last_seen_timestamp: float,
+        last_position: dict[str, float] | None,
+        track_id: int,
+        status: IdentityStatus,
+        confidence: float,
+        explanation: str,
+        evidence_ref: str | None,
+    ) -> IdentityProfile:
+        prefix = "P" if kind == "person" else "O"
+        used_numbers = [
+            int(profile.identity_code[1:])
+            for profile in self.profiles
+            if profile.identity_code.startswith(prefix)
+            and profile.identity_code[1:].isdigit()
+        ]
+        identity_code = f"{prefix}{max(used_numbers, default=0) + 1:03d}"
+        return IdentityProfile(
+            id=str(uuid.uuid4()),
+            identity_code=identity_code,
+            entity_type=kind,
+            class_name=class_name,
+            status=status,
+            first_seen_timestamp=first_seen_timestamp,
+            last_seen_timestamp=last_seen_timestamp,
+            appearance_count=1,
+            associated_track_ids=[track_id],
+            appearance_signature=signature,
+            last_position=last_position,
+            matching_confidence=confidence,
+            matching_explanation=explanation,
+            evidence_refs=[evidence_ref] if evidence_ref else [],
+            track_intervals={track_id: (first_seen_timestamp, last_seen_timestamp)},
+            is_new=True,
         )
-        .all()
-    )
-    highest = 0
-    for (code,) in codes:
-        try:
-            highest = max(highest, int(str(code)[1:]))
-        except ValueError:
-            logger.warning("Ignoring malformed identity code %s in source %s", code, source_id)
-    return f"{prefix}{highest + 1:03d}"
 
 
-def _candidate_matches(
-    db: Session,
-    source_type: SourceType,
+def _blend_signatures(left: Signature | None, right: Signature | None) -> Signature | None:
+    if left is None:
+        return right
+    return aggregate_signatures([left, right])
+
+
+def save_identity_evidence(
+    *,
+    source_type: IdentitySourceType,
     source_id: str,
-    entity_type: str,
-    category: str,
-    descriptor: dict[str, Any] | None,
-    first_seen_timestamp: float,
-    exclude_identity_id: str | None = None,
-) -> list[tuple[float, EntityIdentity]]:
-    if descriptor is None or float(descriptor.get("quality", 0.0)) < 0.18:
-        return []
-    query = db.query(EntityIdentity).filter(
-        EntityIdentity.source_type == source_type,
-        EntityIdentity.source_id == source_id,
-        EntityIdentity.entity_type == entity_type,
-        EntityIdentity.appearance_count > 0,
-        EntityIdentity.merged_into_identity_id.is_(None),
+    track_id: int,
+    frame: np.ndarray,
+    bbox: dict[str, float] | Any,
+    class_name: str,
+) -> str | None:
+    """Store a small anonymous crop; person evidence excludes the head/face region."""
+    signature_region = _evidence_crop(frame, bbox, class_name)
+    if signature_region is None:
+        return None
+    if signature_region.shape[1] > 320:
+        target_width = 320
+        target_height = max(1, round(signature_region.shape[0] * target_width / signature_region.shape[1]))
+        signature_region = cv2.resize(
+            signature_region, (target_width, target_height), interpolation=cv2.INTER_AREA
+        )
+    root = get_settings().resolved_identity_evidence_dir
+    folder = (root / source_type / Path(source_id).name).resolve()
+    if folder.parent.parent != root.resolve():
+        raise ValueError("Invalid identity evidence path.")
+    folder.mkdir(parents=True, exist_ok=True)
+    target = (folder / f"track_{int(track_id)}.jpg").resolve()
+    if target.parent != folder:
+        raise ValueError("Invalid identity evidence filename.")
+    temporary = target.with_suffix(".tmp.jpg")
+    if not cv2.imwrite(str(temporary), signature_region, [int(cv2.IMWRITE_JPEG_QUALITY), 75]):
+        raise OSError("Unable to save identity appearance evidence.")
+    os.replace(temporary, target)
+    project_root = BACKEND_DIR.parent.resolve()
+    try:
+        return target.relative_to(project_root).as_posix()
+    except ValueError:
+        return str(target)
+
+
+def _evidence_crop(
+    frame: np.ndarray, bbox: dict[str, float] | Any, class_name: str
+) -> np.ndarray | None:
+    if frame is None or frame.ndim != 3:
+        return None
+    height, width = frame.shape[:2]
+    try:
+        x1 = int(max(0, min(width, float(bbox["x1"] if isinstance(bbox, dict) else bbox.x1))))
+        y1 = int(max(0, min(height, float(bbox["y1"] if isinstance(bbox, dict) else bbox.y1))))
+        x2 = int(max(0, min(width, float(bbox["x2"] if isinstance(bbox, dict) else bbox.x2))))
+        y2 = int(max(0, min(height, float(bbox["y2"] if isinstance(bbox, dict) else bbox.y2))))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if x2 <= x1 or y2 <= y1:
+        return None
+    if _entity_type(class_name) == "person":
+        y1 += int((y2 - y1) * 0.22)
+    crop = frame[y1:y2, x1:x2]
+    return crop if crop.size > 0 else None
+
+
+def _persist_profile(db: Session, user_id: int, source_type: IdentitySourceType, source_id: str, profile: IdentityProfile) -> EntityIdentity:
+    row = db.query(EntityIdentity).filter(EntityIdentity.id == profile.id).first()
+    if row is None:
+        row = EntityIdentity(
+            id=profile.id,
+            user_id=user_id,
+            source_type=source_type,
+            source_id=source_id,
+            analysis_id=source_id if source_type == "analysis" else None,
+            live_session_id=source_id if source_type == "live_session" else None,
+            identity_code=profile.identity_code,
+            entity_type=profile.entity_type,
+            category=profile.class_name,
+            class_name=profile.class_name,
+            status=profile.status,
+            first_seen_timestamp=profile.first_seen_timestamp,
+            last_seen_timestamp=profile.last_seen_timestamp,
+            appearance_count=profile.appearance_count,
+            descriptor_sample_count=1 if profile.appearance_signature else 0,
+            associated_track_ids=sorted(set(profile.associated_track_ids)),
+            appearance_descriptor=profile.appearance_signature,
+            appearance_signature=profile.appearance_signature,
+            feature_reference=_FEATURE_REFERENCE,
+            matching_confidence=profile.matching_confidence,
+            matching_explanation=profile.matching_explanation,
+            evidence_refs=sorted(set(profile.evidence_refs)),
+        )
+        db.add(row)
+        db.flush()
+        profile.is_new = False
+        return row
+    row.status = profile.status
+    row.first_seen_timestamp = profile.first_seen_timestamp
+    row.last_seen_timestamp = profile.last_seen_timestamp
+    row.appearance_count = profile.appearance_count
+    row.associated_track_ids = sorted(set(profile.associated_track_ids))
+    row.category = profile.class_name
+    row.descriptor_sample_count = max(
+        row.descriptor_sample_count,
+        1 if profile.appearance_signature else 0,
     )
-    if entity_type == "object":
-        query = query.filter(EntityIdentity.category == category)
-    identities = query.order_by(EntityIdentity.first_seen_timestamp.asc()).all()
-    matches: list[tuple[float, EntityIdentity]] = []
-    for identity in identities:
-        if identity.id == exclude_identity_id:
-            continue
-        if entity_type == "object" and (
-            float(descriptor.get("distinctiveness", 0.0)) < 0.12
-            or float((identity.appearance_descriptor or {}).get("distinctiveness", 0.0)) < 0.12
-        ):
-            continue
-        if identity.last_seen_timestamp >= first_seen_timestamp - 0.25:
-            continue
-        score = appearance_similarity(descriptor, identity.appearance_descriptor, entity_type)
-        matches.append((score, identity))
-    return sorted(matches, key=lambda match: match[0], reverse=True)
+    row.appearance_descriptor = profile.appearance_signature
+    row.appearance_signature = profile.appearance_signature
+    row.last_position = profile.last_position
+    row.matching_confidence = profile.matching_confidence
+    row.matching_explanation = profile.matching_explanation
+    row.evidence_refs = sorted(set(profile.evidence_refs))
+    db.flush()
+    return row
 
 
-def _make_identity(
+def _persist_observation(
+    db: Session,
     *,
     user_id: int,
-    source_type: SourceType,
-    source_id: str,
-    analysis_id: str | None,
-    live_session_id: str | None,
-    identity_code: str,
-    entity_type: str,
-    category: str,
-    first_seen_timestamp: float,
-    last_seen_timestamp: float,
-    descriptor: dict[str, Any] | None,
-    descriptor_sample_count: int,
-    matching_confidence: float | None,
-    candidate_code: str | None,
-    matching_explanation: str,
-) -> EntityIdentity:
-    return EntityIdentity(
-        id=str(uuid.uuid4()),
-        user_id=user_id,
-        source_type=source_type,
-        source_id=source_id,
-        analysis_id=analysis_id,
-        live_session_id=live_session_id,
-        identity_code=identity_code,
-        entity_type=entity_type,
-        category=category,
-        first_seen_timestamp=first_seen_timestamp,
-        last_seen_timestamp=last_seen_timestamp,
-        appearance_count=1,
-        descriptor_sample_count=descriptor_sample_count,
-        matching_confidence=matching_confidence,
-        status="unknown",
-        appearance_descriptor=descriptor,
-        evidence_refs=[],
-        matching_explanation=matching_explanation,
-        unresolved_candidate_code=candidate_code,
-    )
-
-
-def _blend_descriptor(
-    existing: dict[str, Any] | None,
-    incoming: dict[str, Any] | None,
-    existing_count: int,
-    incoming_count: int,
-) -> dict[str, Any] | None:
-    if incoming is None:
-        return existing
-    if existing is None or existing_count <= 0:
-        return incoming
-    weights = (max(0, existing_count), max(1, incoming_count))
-    result: dict[str, Any] = {"version": 1}
-    for key in ("hsv_hist", "value_hist", "edge_hist", "top_hist", "bottom_hist"):
-        previous = existing.get(key) or []
-        current = incoming.get(key) or []
-        if not previous or not current or len(previous) != len(current):
-            result[key] = current or previous
-            continue
-        merged = (
-            np.asarray(previous, dtype=np.float64) * weights[0]
-            + np.asarray(current, dtype=np.float64) * weights[1]
-        ) / max(1, sum(weights))
-        total = float(merged.sum())
-        result[key] = [round(float(value) / total, 6) for value in merged] if total else []
-    total_samples = max(1, sum(weights))
-    result["aspect_ratio"] = round(
-        (
-            float(existing.get("aspect_ratio", 1.0)) * weights[0]
-            + float(incoming.get("aspect_ratio", 1.0)) * weights[1]
-        )
-        / total_samples,
-        5,
-    )
-    result["quality"] = round(
-        (
-            float(existing.get("quality", 0.0)) * weights[0]
-            + float(incoming.get("quality", 0.0)) * weights[1]
-        )
-        / total_samples,
-        4,
-    )
-    result["distinctiveness"] = round(
-        (
-            float(existing.get("distinctiveness", 0.0)) * weights[0]
-            + float(incoming.get("distinctiveness", 0.0)) * weights[1]
-        )
-        / total_samples,
-        4,
-    )
-    return result
-
-
-def _save_live_identity_evidence(
-    *,
+    source_type: IdentitySourceType,
     source_id: str,
     track_id: int,
-    frame_index: int,
-    frame: np.ndarray,
-    bbox: tuple[float, float, float, float],
-    entity_type: str,
-) -> str | None:
-    crop_info = _entity_crop(frame, bbox, entity_type)
-    if crop_info is None:
-        return None
-    crop, _quality = crop_info
-    max_width = 320
-    if crop.shape[1] > max_width:
-        crop = cv2.resize(
-            crop,
-            (max_width, max(1, round(crop.shape[0] * max_width / crop.shape[1]))),
-            interpolation=cv2.INTER_AREA,
-        )
-    settings = get_settings()
-    live_root = settings.resolved_live_dir.resolve()
-    session_dir = (live_root / source_id).resolve()
-    evidence_dir = (session_dir / "identity-evidence").resolve()
-    if session_dir.parent != live_root or evidence_dir.parent != session_dir:
-        raise ValueError("Invalid live identity evidence storage path.")
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"identity_t{track_id}_f{frame_index}.jpg"
-    target_path = (evidence_dir / filename).resolve()
-    if target_path.parent != evidence_dir:
-        raise ValueError("Invalid live identity evidence filename.")
-    if target_path.exists():
-        return filename
-    ok, encoded = cv2.imencode(".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
-    if not ok:
-        return None
-    target_path.write_bytes(encoded.tobytes())
-    return filename
-
-
-def _make_track_association(
-    *,
-    identity: EntityIdentity,
-    source_type: SourceType,
-    source_id: str,
-    track_id: int,
-    category: str,
+    class_name: str,
     first_seen_timestamp: float,
     last_seen_timestamp: float,
     detection_count: int,
-    descriptor: dict[str, Any] | None,
-    descriptor_sample_count: int,
-    match_confidence: float | None,
-    status: str,
-    explanation: str,
-    candidate_code: str | None,
-    evidence_reference: str | None,
-) -> IdentityTrackAssociation:
-    if evidence_reference:
-        identity.evidence_refs = list(
-            dict.fromkeys([*identity.evidence_refs, evidence_reference])
+    match_confidence: float,
+    feature_quality: float,
+    matching_explanation: str,
+    bbox: dict[str, float] | None,
+    evidence_path: str | None,
+    appearance_signature: Signature | None,
+    last_position: dict[str, float] | None,
+    identity_id: str,
+) -> IdentityObservation:
+    observation = (
+        db.query(IdentityObservation)
+        .filter(
+            IdentityObservation.source_type == source_type,
+            IdentityObservation.source_id == source_id,
+            IdentityObservation.track_id == track_id,
         )
-    return IdentityTrackAssociation(
-        id=str(uuid.uuid4()),
-        identity=identity,
-        source_type=source_type,
-        source_id=source_id,
-        track_id=track_id,
-        category=category,
-        first_seen_timestamp=first_seen_timestamp,
-        last_seen_timestamp=last_seen_timestamp,
-        detection_count=detection_count,
-        descriptor_sample_count=descriptor_sample_count,
-        appearance_descriptor=descriptor,
-        match_confidence=match_confidence,
-        match_status=status,
-        matching_explanation=explanation,
-        unresolved_candidate_code=candidate_code,
-        evidence_reference=evidence_reference,
+        .first()
     )
-
-
-def _assign_recorded_profile(
-    db: Session,
-    *,
-    user_id: int,
-    analysis_id: str,
-    profile: TrackAppearanceProfile,
-) -> tuple[EntityIdentity, IdentityTrackAssociation]:
-    entity_type = profile.entity_type
-    matches = _candidate_matches(
-        db,
-        "analysis",
-        analysis_id,
-        entity_type,
-        profile.category,
-        profile.descriptor,
-        profile.first_seen_timestamp,
-    )
-    accepted_threshold, uncertain_threshold, margin_threshold = _thresholds(entity_type)
-    best_score, best_identity = matches[0] if matches else (0.0, None)
-    margin = best_score - (matches[1][0] if len(matches) > 1 else 0.0)
-    can_match = (
-        best_identity is not None
-        and best_score >= accepted_threshold
-        and margin >= margin_threshold
-    )
-    if can_match and best_identity is not None:
-        identity = best_identity
-        old_count = identity.descriptor_sample_count
-        identity.appearance_descriptor = _blend_descriptor(
-            identity.appearance_descriptor,
-            profile.descriptor,
-            old_count,
-            profile.descriptor_sample_count,
+    if observation is None:
+        observation = IdentityObservation(
+            identity_id=identity_id,
+            user_id=user_id,
+            source_type=source_type,
+            source_id=source_id,
+            track_id=track_id,
+            class_name=class_name,
+            first_seen_timestamp=first_seen_timestamp,
+            last_seen_timestamp=last_seen_timestamp,
+            detection_count=detection_count,
+            match_confidence=match_confidence,
+            feature_quality=feature_quality,
+            matching_explanation=matching_explanation,
+            bbox=bbox,
+            evidence_path=evidence_path,
+            appearance_signature=appearance_signature,
+            last_position=last_position,
         )
-        identity.descriptor_sample_count += profile.descriptor_sample_count
-        identity.first_seen_timestamp = min(
-            identity.first_seen_timestamp,
-            profile.first_seen_timestamp,
-        )
-        identity.last_seen_timestamp = max(
-            identity.last_seen_timestamp,
-            profile.last_seen_timestamp,
-        )
-        identity.appearance_count += 1
-        identity.matching_confidence = best_score
-        if identity.status != "confirmed":
-            identity.status = "probable"
-        identity.matching_explanation = (
-            f"Track T{profile.track_id:03d} was associated by appearance similarity "
-            f"{best_score:.2f}; this is a probable visual match, not proof of identity."
-        )
-        if profile.evidence_filename:
-            identity.evidence_refs = list(dict.fromkeys(
-                [*identity.evidence_refs, profile.evidence_filename]
-            ))
-        explanation = identity.matching_explanation
-        association_status = "probable"
-        candidate_code = None
-        match_confidence: float | None = best_score
+        db.add(observation)
     else:
-        candidate_code = (
-            best_identity.identity_code
-            if best_identity is not None and best_score >= uncertain_threshold
+        observation.first_seen_timestamp = min(observation.first_seen_timestamp, first_seen_timestamp)
+        observation.last_seen_timestamp = max(observation.last_seen_timestamp, last_seen_timestamp)
+        observation.detection_count = max(observation.detection_count, detection_count)
+        observation.match_confidence = match_confidence
+        observation.feature_quality = max(observation.feature_quality, feature_quality)
+        observation.matching_explanation = matching_explanation
+        observation.bbox = bbox or observation.bbox
+        observation.evidence_path = evidence_path or observation.evidence_path
+        observation.appearance_signature = appearance_signature or observation.appearance_signature
+        observation.last_position = last_position or observation.last_position
+    db.flush()
+    return observation
+
+
+def _set_observation_identity(
+    observation: IdentityObservation, profile: IdentityProfile
+) -> None:
+    observation.identity_id = profile.id
+
+
+def _bbox_from_detection(detection: dict[str, Any]) -> dict[str, float] | None:
+    bbox = detection.get("bbox")
+    if not isinstance(bbox, dict):
+        return None
+    try:
+        return {key: float(bbox[key]) for key in ("x1", "y1", "x2", "y2")}
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def recognize_recorded_analysis(
+    *,
+    db: Session,
+    analysis_id: str,
+    user_id: int,
+    analysis_dir: Path,
+) -> dict[str, Any]:
+    """Create source-local identities from stored chronological detections and frame crops."""
+    detections_path = analysis_dir / "detections.json"
+    tracks_path = analysis_dir / "tracks.json"
+    frames_dir = (analysis_dir / "frames").resolve()
+    if not detections_path.is_file() or not tracks_path.is_file():
+        raise FileNotFoundError("Recorded identity matching requires detections.json and tracks.json.")
+    try:
+        detections_data = json.loads(detections_path.read_text(encoding="utf-8"))
+        tracks_data = json.loads(tracks_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Recorded identity tracking data could not be read.") from exc
+
+    db.query(IdentityObservation).filter(
+        IdentityObservation.source_type == "analysis",
+        IdentityObservation.source_id == analysis_id,
+    ).delete(synchronize_session=False)
+    db.query(EntityIdentity).filter(
+        EntityIdentity.source_type == "analysis",
+        EntityIdentity.source_id == analysis_id,
+    ).delete(synchronize_session=False)
+
+    grouped: dict[int, dict[str, Any]] = {}
+    frame_entries = sorted(
+        detections_data.get("frames", []), key=lambda item: float(item.get("timestamp_seconds", 0))
+    )
+    for frame_entry in frame_entries:
+        filename = str(frame_entry.get("filename", ""))
+        frame_path = (frames_dir / Path(filename).name).resolve()
+        if frame_path.parent != frames_dir or not frame_path.is_file():
+            continue
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            continue
+        timestamp = float(frame_entry.get("timestamp_seconds", 0.0))
+        frame_index = int(frame_entry.get("frame_index", 0))
+        for detection in frame_entry.get("detections", []):
+            raw_track_id = detection.get("track_id")
+            bbox = _bbox_from_detection(detection)
+            if raw_track_id is None or bbox is None:
+                continue
+            track_id = int(raw_track_id)
+            class_name = str(detection.get("class_name", "object"))
+            signature = extract_appearance_signature(frame, bbox, class_name)
+            item = grouped.setdefault(
+                track_id,
+                {
+                    "class_name": class_name,
+                    "first_seen": timestamp,
+                    "last_seen": timestamp,
+                    "detection_count": 0,
+                    "samples": [],
+                    "best_sample": None,
+                    "first_position": None,
+                    "last_position": None,
+                },
+            )
+            frame_width = int(frame_entry.get("frame_width") or frame.shape[1])
+            frame_height = int(frame_entry.get("frame_height") or frame.shape[0])
+            center = {
+                "x": round((bbox["x1"] + bbox["x2"]) / (2 * max(frame_width, 1)), 4),
+                "y": round((bbox["y1"] + bbox["y2"]) / (2 * max(frame_height, 1)), 4),
+            }
+            if item["first_position"] is None:
+                item["first_position"] = center
+            item["last_position"] = center
+            item["first_seen"] = min(item["first_seen"], timestamp)
+            item["last_seen"] = max(item["last_seen"], timestamp)
+            item["detection_count"] += 1
+            if signature is not None:
+                samples: list[Signature] = item["samples"]
+                if len(samples) < 12 and (not samples or frame_index % 5 == 0):
+                    samples.append(signature)
+                best = item["best_sample"]
+                if best is None or signature["quality"] > best["signature"]["quality"]:
+                    item["best_sample"] = {
+                        "signature": signature,
+                        "frame_path": frame_path,
+                        "bbox": bbox,
+                        "frame_index": frame_index,
+                    }
+
+    matcher = IdentityMatcher("analysis", analysis_id)
+    assignment_by_track: dict[int, IdentityAssignment] = {}
+    for track_id, item in sorted(
+        grouped.items(), key=lambda entry: (entry[1]["first_seen"], entry[0])
+    ):
+        signature = aggregate_signatures(item["samples"])
+        best_sample = item["best_sample"]
+        evidence_path = None
+        if best_sample is not None and best_sample["signature"]["quality"] >= 0.20:
+            best_frame = cv2.imread(str(best_sample["frame_path"]))
+            if best_frame is None:
+                raise OSError("Could not load the selected identity evidence frame.")
+            evidence_path = save_identity_evidence(
+                source_type="analysis",
+                source_id=analysis_id,
+                track_id=track_id,
+                frame=best_frame,
+                bbox=best_sample["bbox"],
+                class_name=item["class_name"],
+            )
+        assignment = matcher.assign(
+            track_id=track_id,
+            class_name=item["class_name"],
+            signature=signature,
+            first_seen_timestamp=float(item["first_seen"]),
+            last_seen_timestamp=float(item["last_seen"]),
+            first_position=item["first_position"],
+            last_position=item["last_position"],
+            evidence_ref=None,
+        )
+        profile = assignment.profile
+        evidence_ref = (
+            f"{get_settings().api_v1_prefix}/identities/"
+            f"{profile.id}/observations/{track_id}/evidence"
+            if evidence_path
             else None
         )
-        if profile.descriptor is None:
-            explanation = (
-                "Appearance evidence was too small or unavailable; this track remains an "
-                "unresolved source-local identity."
-            )
-        elif candidate_code:
-            explanation = (
-                f"Best prior appearance similarity was {best_score:.2f}, below the "
-                "automatic-match confidence/margin requirements; no identity was merged."
-            )
-        elif best_identity is None:
-            explanation = (
-                "No earlier non-overlapping identity in this video was available for comparison."
-            )
-        else:
-            explanation = (
-                f"No prior identity met the configured appearance threshold "
-                f"(best similarity {best_score:.2f}); a separate ID was retained."
-            )
-        identity = _make_identity(
+        if evidence_ref and evidence_ref not in profile.evidence_refs:
+            profile.evidence_refs.append(evidence_ref)
+        identity_row = _persist_profile(db, user_id, "analysis", analysis_id, profile)
+        observation = _persist_observation(
+            db,
             user_id=user_id,
             source_type="analysis",
             source_id=analysis_id,
-            analysis_id=analysis_id,
-            live_session_id=None,
-            identity_code=_next_identity_code(db, "analysis", analysis_id, entity_type),
-            entity_type=entity_type,
-            category=profile.category,
-            first_seen_timestamp=profile.first_seen_timestamp,
-            last_seen_timestamp=profile.last_seen_timestamp,
-            descriptor=profile.descriptor,
-            descriptor_sample_count=profile.descriptor_sample_count,
-            matching_confidence=best_score if best_identity is not None else None,
-            candidate_code=candidate_code,
-            matching_explanation=explanation,
+            track_id=track_id,
+            class_name=item["class_name"],
+            first_seen_timestamp=float(item["first_seen"]),
+            last_seen_timestamp=float(item["last_seen"]),
+            detection_count=int(item["detection_count"]),
+            match_confidence=assignment.match_confidence,
+            feature_quality=float((signature or {}).get("quality", 0.0)),
+            matching_explanation=assignment.explanation,
+            bbox=best_sample["bbox"] if best_sample else None,
+            evidence_path=evidence_path,
+            appearance_signature=signature,
+            last_position=item["last_position"],
+            identity_id=profile.id,
         )
-        db.add(identity)
-        association_status = "unknown"
-        match_confidence = best_score if best_identity is not None else None
+        _set_observation_identity(observation, profile)
+        identity_row.evidence_refs = sorted(set(profile.evidence_refs))
+        assignment_by_track[track_id] = assignment
 
-    association = _make_track_association(
-        identity=identity,
-        source_type="analysis",
-        source_id=analysis_id,
-        track_id=profile.track_id,
-        category=profile.category,
-        first_seen_timestamp=profile.first_seen_timestamp,
-        last_seen_timestamp=profile.last_seen_timestamp,
-        detection_count=profile.detection_count,
-        descriptor=profile.descriptor,
-        descriptor_sample_count=profile.descriptor_sample_count,
-        match_confidence=match_confidence,
-        status=association_status,
-        explanation=explanation if not can_match else identity.matching_explanation,
-        candidate_code=candidate_code,
-        evidence_reference=profile.evidence_filename,
-    )
-    db.add(association)
-    return identity, association
-
-
-def associate_recorded_track_appearances(
-    db: Session,
-    *,
-    user_id: int,
-    analysis_id: str,
-    profiles: list[TrackAppearanceProfile],
-) -> dict[int, str]:
-    """Build a chronological source-local identity registry for a completed analysis."""
-    with _identity_lock:
-        db.query(IdentityTrackAssociation).filter(
-            IdentityTrackAssociation.source_type == "analysis",
-            IdentityTrackAssociation.source_id == analysis_id,
-        ).delete(synchronize_session=False)
-        db.query(EntityIdentity).filter(
-            EntityIdentity.source_type == "analysis",
-            EntityIdentity.source_id == analysis_id,
-        ).delete(synchronize_session=False)
-        identity_codes: dict[int, str] = {}
-        for profile in sorted(
-            profiles,
-            key=lambda item: (item.first_seen_timestamp, item.track_id),
-        ):
-            identity, _association = _assign_recorded_profile(
-                db,
-                user_id=user_id,
-                analysis_id=analysis_id,
-                profile=profile,
+    for frame_entry in detections_data.get("frames", []):
+        for detection in frame_entry.get("detections", []):
+            track_id = detection.get("track_id")
+            assignment = assignment_by_track.get(int(track_id)) if track_id is not None else None
+            if assignment:
+                detection.update(
+                    {
+                        "identity_id": assignment.profile.id,
+                        "identity_code": assignment.profile.identity_code,
+                        "identity_status": assignment.profile.status,
+                        "identity_confidence": assignment.match_confidence,
+                    }
+                )
+    for track in tracks_data.get("tracks", []):
+        assignment = assignment_by_track.get(int(track.get("track_id", -1)))
+        if assignment:
+            track.update(
+                {
+                    "identity_id": assignment.profile.id,
+                    "identity_code": assignment.profile.identity_code,
+                    "identity_status": assignment.profile.status,
+                    "identity_confidence": assignment.match_confidence,
+                }
             )
-            db.flush()
-            identity_codes[profile.track_id] = identity.identity_code
-        return identity_codes
+
+    _write_json_atomically(detections_path, detections_data)
+    _write_json_atomically(tracks_path, tracks_data)
+    db.commit()
+    return {
+        "total_unique_people": sum(p.entity_type == "person" for p in matcher.profiles),
+        "total_unique_objects": sum(p.entity_type == "object" for p in matcher.profiles),
+        "identity_count": len(matcher.profiles),
+    }
 
 
-def get_track_identity_codes(
-    db: Session,
+def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def initialize_live_identity_matcher(
+    *, db: Session, session_id: str, user_id: int
+) -> IdentityMatcher:
+    return IdentityMatcher.from_database(db, "live_session", session_id, user_id)
+
+
+def identify_live_detections(
     *,
-    source_type: SourceType,
-    source_id: str,
-) -> dict[int, str]:
-    rows = (
-        db.query(IdentityTrackAssociation.track_id, EntityIdentity.identity_code)
-        .join(EntityIdentity, IdentityTrackAssociation.identity_id == EntityIdentity.id)
-        .filter(
-            IdentityTrackAssociation.source_type == source_type,
-            IdentityTrackAssociation.source_id == source_id,
-            EntityIdentity.appearance_count > 0,
-            EntityIdentity.merged_into_identity_id.is_(None),
-        )
-        .all()
-    )
-    return {int(track_id): str(identity_code) for track_id, identity_code in rows}
-
-
-def _rebuild_identity_aggregate(db: Session, identity: EntityIdentity) -> None:
-    associations = (
-        db.query(IdentityTrackAssociation)
-        .filter(IdentityTrackAssociation.identity_id == identity.id)
-        .order_by(IdentityTrackAssociation.first_seen_timestamp.asc())
-        .all()
-    )
-    if not associations:
-        identity.appearance_count = 0
-        identity.descriptor_sample_count = 0
-        identity.appearance_descriptor = None
-        identity.evidence_refs = []
-        return
-    identity.appearance_count = len(associations)
-    identity.first_seen_timestamp = min(item.first_seen_timestamp for item in associations)
-    identity.last_seen_timestamp = max(item.last_seen_timestamp for item in associations)
-    descriptors = [
-        (item.appearance_descriptor, item.descriptor_sample_count)
-        for item in associations
-        if item.appearance_descriptor
-    ]
-    aggregate: dict[str, Any] | None = None
-    count = 0
-    for descriptor, weight in descriptors:
-        aggregate = _blend_descriptor(aggregate, descriptor, count, weight)
-        count += max(1, weight)
-    identity.appearance_descriptor = aggregate
-    identity.descriptor_sample_count = count
-    identity.evidence_refs = list(
-        dict.fromkeys(item.evidence_reference for item in associations if item.evidence_reference)
-    )
-
-
-def _try_upgrade_live_association(
     db: Session,
-    association: IdentityTrackAssociation,
-) -> None:
-    if (
-        association.manually_corrected
-        or association.match_status != "unknown"
-        or association.descriptor_sample_count < 2
-        or association.appearance_descriptor is None
-    ):
-        return
-    identity = association.identity
-    entity_type = identity.entity_type
-    matches = _candidate_matches(
-        db,
-        "live_session",
-        association.source_id,
-        entity_type,
-        association.category,
-        association.appearance_descriptor,
-        association.first_seen_timestamp,
-        exclude_identity_id=identity.id,
-    )
-    accepted_threshold, _uncertain_threshold, margin_threshold = _thresholds(entity_type)
-    if not matches:
-        return
-    best_score, target = matches[0]
-    margin = best_score - (matches[1][0] if len(matches) > 1 else 0.0)
-    if best_score < accepted_threshold or margin < margin_threshold:
-        return
-
-    identity_id = identity.id
-    association.identity = target
-    association.match_status = "probable"
-    association.match_confidence = best_score
-    association.unresolved_candidate_code = None
-    association.matching_explanation = (
-        f"Track T{association.track_id:03d} was associated by appearance similarity "
-        f"{best_score:.2f} after additional observations; this remains a probable visual match."
-    )
-    target.matching_confidence = best_score
-    if target.status != "confirmed":
-        target.status = "probable"
-    target.matching_explanation = association.matching_explanation
-    _rebuild_identity_aggregate(db, target)
-    _rebuild_identity_aggregate(db, identity)
-    if identity.appearance_count == 0:
-        identity.merged_into_identity_id = target.id
-        identity.matching_explanation = (
-            f"This provisional identity was later associated with {target.identity_code} "
-            "after additional appearance observations."
-        )
-
-
-def update_live_track_appearances(
-    db: Session,
-    *,
-    user_id: int,
+    matcher: IdentityMatcher,
     session_id: str,
-    frame_index: int,
-    timestamp_seconds: float,
+    user_id: int,
     frame: np.ndarray,
+    frame_index: int,
+    timestamp: float,
     detections: list[Any],
-) -> dict[int, str]:
-    """Persist per-session tracked appearances and return labels for this captured frame."""
-    with _identity_lock:
-        identity_codes: dict[int, str] = {}
-        next_identity_numbers: dict[str, int] = {}
-        for detection in detections:
-            track_id = detection.track_id
-            if track_id is None:
-                continue
-            category = str(detection.class_name)
-            entity_type = "person" if category.casefold() == "person" else "object"
-            bbox = (
-                detection.bbox.x1,
-                detection.bbox.y1,
-                detection.bbox.x2,
-                detection.bbox.y2,
-            )
-            association = (
-                db.query(IdentityTrackAssociation)
-                .filter(
-                    IdentityTrackAssociation.source_type == "live_session",
-                    IdentityTrackAssociation.source_id == session_id,
-                    IdentityTrackAssociation.track_id == int(track_id),
-                )
-                .first()
-            )
-            should_sample = association is None or association.detection_count % 3 == 0
-            descriptor = (
-                extract_appearance_descriptor(frame, bbox, category, detection.confidence)
-                if should_sample
-                else None
-            )
-            evidence_reference = None
-            if association is None or not association.evidence_reference:
-                evidence_reference = _save_live_identity_evidence(
-                    source_id=session_id,
-                    track_id=int(track_id),
-                    frame_index=frame_index,
-                    frame=frame,
-                    bbox=bbox,
-                    entity_type=entity_type,
-                )
-
-            if association is None:
-                profile = TrackAppearanceProfile(
-                    track_id=int(track_id),
-                    category=category,
-                    first_seen_timestamp=timestamp_seconds,
-                    last_seen_timestamp=timestamp_seconds,
-                    detection_count=1,
-                    descriptor=descriptor,
-                    descriptor_sample_count=1 if descriptor else 0,
-                    evidence_filename=evidence_reference,
-                )
-                matches = _candidate_matches(
-                    db,
-                    "live_session",
-                    session_id,
-                    entity_type,
-                    category,
-                    descriptor,
-                    timestamp_seconds,
-                )
-                accepted_threshold, uncertain_threshold, margin_threshold = _thresholds(entity_type)
-                best_score, best_identity = matches[0] if matches else (0.0, None)
-                margin = best_score - (matches[1][0] if len(matches) > 1 else 0.0)
-                if (
-                    best_identity is not None
-                    and best_score >= accepted_threshold
-                    and margin >= margin_threshold
-                ):
-                    identity = best_identity
-                    identity.appearance_count += 1
-                    identity.first_seen_timestamp = min(identity.first_seen_timestamp, timestamp_seconds)
-                    identity.last_seen_timestamp = max(identity.last_seen_timestamp, timestamp_seconds)
-                    identity.appearance_descriptor = _blend_descriptor(
-                        identity.appearance_descriptor,
-                        descriptor,
-                        identity.descriptor_sample_count,
-                        1 if descriptor else 0,
-                    )
-                    identity.descriptor_sample_count += 1 if descriptor else 0
-                    identity.matching_confidence = best_score
-                    if identity.status != "confirmed":
-                        identity.status = "probable"
-                    explanation = (
-                        f"Track T{track_id:03d} matched {identity.identity_code} with "
-                        f"appearance similarity {best_score:.2f}; this is not proof of identity."
-                    )
-                    association_status = "probable"
-                    match_confidence: float | None = best_score
-                    candidate_code = None
-                else:
-                    candidate_code = (
-                        best_identity.identity_code
-                        if best_identity is not None and best_score >= uncertain_threshold
-                        else None
-                    )
-                    if descriptor is None:
-                        explanation = (
-                            "Appearance evidence was too small or unavailable; the track remains "
-                            "an unresolved source-local identity."
-                        )
-                    elif candidate_code:
-                        explanation = (
-                            f"Similarity {best_score:.2f} was uncertain or ambiguous; no merge "
-                            "was made."
-                        )
-                    elif best_identity is None:
-                        explanation = (
-                            "No earlier non-overlapping identity in this session was available "
-                            "for comparison."
-                        )
-                    else:
-                        explanation = (
-                            f"No earlier identity met the configured threshold "
-                            f"(best similarity {best_score:.2f}); a separate ID was retained."
-                        )
-                    identity_number = next_identity_numbers.get(entity_type)
-                    if identity_number is None:
-                        next_code = _next_identity_code(
-                            db,
-                            "live_session",
-                            session_id,
-                            entity_type,
-                        )
-                        identity_number = int(next_code[1:])
-                    next_identity_numbers[entity_type] = identity_number + 1
-                    identity = _make_identity(
-                        user_id=user_id,
-                        source_type="live_session",
-                        source_id=session_id,
-                        analysis_id=None,
-                        live_session_id=session_id,
-                        identity_code=(
-                            f"{'P' if entity_type == 'person' else 'O'}"
-                            f"{identity_number:03d}"
-                        ),
-                        entity_type=entity_type,
-                        category=category,
-                        first_seen_timestamp=timestamp_seconds,
-                        last_seen_timestamp=timestamp_seconds,
-                        descriptor=descriptor,
-                        descriptor_sample_count=1 if descriptor else 0,
-                        matching_confidence=best_score if best_identity else None,
-                        candidate_code=candidate_code,
-                        matching_explanation=explanation,
-                    )
-                    db.add(identity)
-                    association_status = "unknown"
-                    match_confidence = best_score if best_identity else None
-                association = _make_track_association(
-                    identity=identity,
+) -> None:
+    """Assign labels to tracked live detections and persist one record per track fragment."""
+    for detection in detections:
+        track_id = detection.track_id
+        if track_id is None:
+            detection.identity_id = None
+            detection.identity_code = None
+            detection.identity_status = "unknown"
+            detection.identity_confidence = 0.0
+            continue
+        track_id = int(track_id)
+        bbox = detection.bbox.model_dump()
+        signature = extract_appearance_signature(frame, bbox, detection.class_name)
+        position = {
+            "x": round((bbox["x1"] + bbox["x2"]) / (2 * max(frame.shape[1], 1)), 4),
+            "y": round((bbox["y1"] + bbox["y2"]) / (2 * max(frame.shape[0], 1)), 4),
+        }
+        existing_profile = matcher.observe_existing_track(track_id, timestamp)
+        if existing_profile is None:
+            evidence_path = None
+            if signature is not None and signature["quality"] >= 0.20:
+                evidence_path = save_identity_evidence(
                     source_type="live_session",
                     source_id=session_id,
-                    track_id=int(track_id),
-                    category=category,
-                    first_seen_timestamp=timestamp_seconds,
-                    last_seen_timestamp=timestamp_seconds,
-                    detection_count=1,
-                    descriptor=descriptor,
-                    descriptor_sample_count=1 if descriptor else 0,
-                    match_confidence=match_confidence,
-                    status=association_status,
-                    explanation=explanation,
-                    candidate_code=candidate_code,
-                    evidence_reference=evidence_reference,
+                    track_id=track_id,
+                    frame=frame,
+                    bbox=bbox,
+                    class_name=detection.class_name,
                 )
-                db.add(association)
-            else:
-                identity = association.identity
-                association.detection_count += 1
-                association.last_seen_timestamp = max(
-                    association.last_seen_timestamp,
-                    timestamp_seconds,
-                )
-                if descriptor is not None:
-                    association.appearance_descriptor = _blend_descriptor(
-                        association.appearance_descriptor,
-                        descriptor,
-                        association.descriptor_sample_count,
-                        1,
-                    )
-                    association.descriptor_sample_count += 1
-                    identity.appearance_descriptor = _blend_descriptor(
-                        identity.appearance_descriptor,
-                        descriptor,
-                        identity.descriptor_sample_count,
-                        1,
-                    )
-                    identity.descriptor_sample_count += 1
-                if evidence_reference and not association.evidence_reference:
-                    association.evidence_reference = evidence_reference
-                    identity.evidence_refs = list(
-                        dict.fromkeys([*identity.evidence_refs, evidence_reference])
-                    )
-                identity.last_seen_timestamp = max(identity.last_seen_timestamp, timestamp_seconds)
-                _try_upgrade_live_association(db, association)
-                identity = association.identity
-            identity_codes[int(track_id)] = identity.identity_code
-        db.flush()
-        return identity_codes
-
-
-def correct_track_identity(
-    db: Session,
-    *,
-    identity: EntityIdentity,
-    association: IdentityTrackAssociation,
-    user_id: int,
-    target_identity: EntityIdentity | None = None,
-    create_new_identity: bool = False,
-    correction_note: str | None = None,
-) -> EntityIdentity:
-    """Manually reassign one source-scoped tracker fragment while retaining its T-ID."""
-    if target_identity is None and not create_new_identity:
-        raise ValueError("Choose an existing identity or request a new identity.")
-    if target_identity is not None and create_new_identity:
-        raise ValueError("Choose either an existing identity or a new identity, not both.")
-    if target_identity is not None and (
-        target_identity.source_type != identity.source_type
-        or target_identity.source_id != identity.source_id
-        or target_identity.entity_type != identity.entity_type
-        or target_identity.user_id != user_id
-    ):
-        raise ValueError("Target identity must belong to the same user, source, and entity type.")
-
-    with _identity_lock:
-        original_identity = association.identity
-        if create_new_identity:
-            new_identity = _make_identity(
-                user_id=user_id,
-                source_type=identity.source_type,  # type: ignore[arg-type]
-                source_id=identity.source_id,
-                analysis_id=identity.analysis_id,
-                live_session_id=identity.live_session_id,
-                identity_code=_next_identity_code(
-                    db,
-                    identity.source_type,  # type: ignore[arg-type]
-                    identity.source_id,
-                    identity.entity_type,
-                ),
-                entity_type=identity.entity_type,
-                category=association.category,
-                first_seen_timestamp=association.first_seen_timestamp,
-                last_seen_timestamp=association.last_seen_timestamp,
-                descriptor=association.appearance_descriptor,
-                descriptor_sample_count=association.descriptor_sample_count,
-                matching_confidence=1.0,
-                candidate_code=None,
-                matching_explanation="Identity manually separated by the source owner.",
+            assignment = matcher.assign(
+                track_id=track_id,
+                class_name=detection.class_name,
+                signature=signature,
+                first_seen_timestamp=timestamp,
+                last_seen_timestamp=timestamp,
+                first_position=position,
+                last_position=position,
+                evidence_ref=None,
             )
-            new_identity.status = "confirmed"
-            db.add(new_identity)
-            target_identity = new_identity
+            profile = assignment.profile
+            evidence_ref = (
+                f"{get_settings().api_v1_prefix}/identities/"
+                f"{profile.id}/observations/{track_id}/evidence"
+                if evidence_path
+                else None
+            )
+            if evidence_ref and evidence_ref not in profile.evidence_refs:
+                profile.evidence_refs.append(evidence_ref)
+            _persist_profile(db, user_id, "live_session", session_id, profile)
+            observation = _persist_observation(
+                db,
+                user_id=user_id,
+                source_type="live_session",
+                source_id=session_id,
+                track_id=track_id,
+                class_name=detection.class_name,
+                first_seen_timestamp=timestamp,
+                last_seen_timestamp=timestamp,
+                detection_count=1,
+                match_confidence=assignment.match_confidence,
+                feature_quality=float((signature or {}).get("quality", 0.0)),
+                matching_explanation=assignment.explanation,
+                bbox=bbox,
+                evidence_path=evidence_path,
+                appearance_signature=signature,
+                last_position=position,
+                identity_id=profile.id,
+            )
+            _set_observation_identity(observation, profile)
+        else:
+            profile = existing_profile
+            last_seen_timestamp = max(
+                profile.track_intervals.get(track_id, (timestamp, timestamp))[1], timestamp
+            )
+            db.query(IdentityObservation).filter(
+                IdentityObservation.source_type == "live_session",
+                IdentityObservation.source_id == session_id,
+                IdentityObservation.track_id == track_id,
+                IdentityObservation.user_id == user_id,
+            ).update(
+                {
+                    "last_seen_timestamp": last_seen_timestamp,
+                    "detection_count": IdentityObservation.detection_count + 1,
+                    "bbox": bbox,
+                    "last_position": position,
+                },
+                synchronize_session=False,
+            )
+            db.query(EntityIdentity).filter(
+                EntityIdentity.id == profile.id,
+                EntityIdentity.user_id == user_id,
+            ).update(
+                {
+                    "last_seen_timestamp": profile.last_seen_timestamp,
+                    "last_position": position,
+                },
+                synchronize_session=False,
+            )
+        detection.identity_code = profile.identity_code
+        detection.identity_id = profile.id
+        detection.identity_status = profile.status
+        detection.identity_confidence = profile.matching_confidence
 
-        assert target_identity is not None
-        association.identity = target_identity
-        association.match_status = "confirmed"
-        association.match_confidence = 1.0
-        association.unresolved_candidate_code = None
-        association.manually_corrected = True
-        association.corrected_by_user_id = user_id
-        association.correction_note = correction_note
-        association.matching_explanation = (
-            f"Track T{association.track_id:03d} was manually assigned to "
-            f"{target_identity.identity_code} by the source owner."
-        )
-        target_identity.status = "confirmed"
-        target_identity.matching_confidence = 1.0
-        target_identity.matching_explanation = association.matching_explanation
-        db.flush()
-        _rebuild_identity_aggregate(db, target_identity)
-        if original_identity.id != target_identity.id:
-            _rebuild_identity_aggregate(db, original_identity)
-            if original_identity.appearance_count == 0:
-                original_identity.merged_into_identity_id = target_identity.id
-                original_identity.matching_explanation = (
-                    f"This identity was manually merged into {target_identity.identity_code}."
-                )
-        db.flush()
-        return target_identity
+
+def get_identity_evidence_path(
+    *, observation: IdentityObservation, identity: EntityIdentity
+) -> Path:
+    """Resolve an identity crop only under the configured identity evidence directory."""
+    if not observation.evidence_path:
+        raise FileNotFoundError("No appearance evidence was retained for this track.")
+    project_root = BACKEND_DIR.parent.resolve()
+    candidate = Path(observation.evidence_path)
+    if not candidate.is_absolute():
+        candidate = project_root / candidate
+    resolved = candidate.resolve()
+    root = get_settings().resolved_identity_evidence_dir.resolve()
+    expected_parent = (root / identity.source_type / Path(identity.source_id).name).resolve()
+    allowed_parents = {expected_parent}
+    if identity.source_type == "live_session":
+        live_root = get_settings().resolved_live_dir.resolve()
+        legacy_parent = (live_root / Path(identity.source_id).name / "identity-evidence").resolve()
+        if legacy_parent.parent.parent == live_root:
+            allowed_parents.add(legacy_parent)
+    if resolved.parent not in allowed_parents:
+        raise PermissionError("Identity evidence path is outside the source-scoped evidence directory.")
+    if not resolved.is_file():
+        raise FileNotFoundError("Identity appearance evidence is no longer available.")
+    return resolved

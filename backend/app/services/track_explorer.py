@@ -250,6 +250,10 @@ def load_enriched_tracks_data(
             TrackSummaryInfo(
                 track_id=tid,
                 track_code=format_track_code(tid),
+                identity_id=item.get("identity_id"),
+                identity_code=item.get("identity_code"),
+                identity_status=item.get("identity_status"),
+                identity_confidence=item.get("identity_confidence"),
                 class_id=int(item["class_id"]),
                 class_name=str(item["class_name"]),
                 first_seen_frame=int(item["first_seen_frame"]),
@@ -321,6 +325,10 @@ def build_track_observation_frames(
                 parsed_det = DetectedObjectInfo(
                     track_id=tid,
                     track_code=format_track_code(tid) if tid is not None else None,
+                    identity_id=det.get("identity_id"),
+                    identity_code=det.get("identity_code"),
+                    identity_status=det.get("identity_status"),
+                    identity_confidence=det.get("identity_confidence"),
                     class_id=int(det["class_id"]),
                     class_name=str(det["class_name"]),
                     confidence=float(det["confidence"]),
@@ -403,6 +411,10 @@ def build_track_observation_frames(
                     selected_detection=DetectedObjectInfo(
                         track_id=track.track_id,
                         track_code=format_track_code(track.track_id),
+                        identity_id=track.identity_id,
+                        identity_code=track.identity_code,
+                        identity_status=track.identity_status,
+                        identity_confidence=track.identity_confidence,
                         class_id=track.class_id,
                         class_name=track.class_name,
                         confidence=pt.confidence,

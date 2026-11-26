@@ -10,11 +10,6 @@ import cv2
 
 from app.config import get_settings
 from app.services.detector import get_detection_model
-from app.services.identity_engine import (
-    TrackAppearanceProfile,
-    average_appearance_descriptors,
-    extract_appearance_descriptor,
-)
 
 
 @dataclass(frozen=True)
@@ -94,7 +89,6 @@ class AnalysisTrackingResult:
     tracks: list[ObjectTrackSummary]
     detections_path: Path
     tracks_path: Path
-    appearance_profiles: list[TrackAppearanceProfile] = field(default_factory=list)
 
 
 @dataclass
@@ -162,12 +156,9 @@ def track_objects_in_analysis(
     frame_records: list[FrameTrackedDetectionsRecord] = []
     class_counter: Counter[str] = Counter()
     track_map: dict[int, _TrackAccumulator] = {}
-    appearance_samples: dict[int, list[dict[str, Any]]] = {}
-    appearance_evidence: dict[int, str] = {}
     total_detections = 0
     frames_with_detections = 0
     total_frames = len(frame_entries)
-    appearance_sample_stride = max(1, total_frames // 5)
 
     with _tracker_lock:
         _reset_predictor_trackers(model)
@@ -276,19 +267,6 @@ def track_objects_in_analysis(
                                         bbox_y2=y2,
                                     )
                                 )
-                                samples = appearance_samples.setdefault(track_id, [])
-                                if len(samples) < 5 and (
-                                    not samples or idx % appearance_sample_stride == 0
-                                ):
-                                    descriptor = extract_appearance_descriptor(
-                                        frame_img,
-                                        (x1, y1, x2, y2),
-                                        class_name,
-                                        confidence_val,
-                                    )
-                                    if descriptor is not None:
-                                        samples.append(descriptor)
-                                        appearance_evidence.setdefault(track_id, filename)
 
                 if frame_detections:
                     frames_with_detections += 1
@@ -342,22 +320,6 @@ def track_objects_in_analysis(
                 timeline_points=acc.timeline_points,
             )
         )
-
-    appearance_profiles = [
-        TrackAppearanceProfile(
-            track_id=track.track_id,
-            category=track.class_name,
-            first_seen_timestamp=track.first_seen_timestamp,
-            last_seen_timestamp=track.last_seen_timestamp,
-            detection_count=track.frame_count,
-            descriptor=average_appearance_descriptors(
-                appearance_samples.get(track.track_id, [])
-            ),
-            descriptor_sample_count=len(appearance_samples.get(track.track_id, [])),
-            evidence_filename=appearance_evidence.get(track.track_id),
-        )
-        for track in track_summaries
-    ]
 
     class_counts = dict(class_counter.most_common())
     tracks_by_class = dict(track_class_counter.most_common())
@@ -462,5 +424,4 @@ def track_objects_in_analysis(
         tracks=track_summaries,
         detections_path=detections_path,
         tracks_path=tracks_path,
-        appearance_profiles=appearance_profiles,
     )

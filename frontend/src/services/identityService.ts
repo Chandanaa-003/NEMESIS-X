@@ -1,140 +1,108 @@
-import { apiClient } from './api.ts'
+import { apiClient } from './api'
 
 export type IdentitySourceType = 'analysis' | 'live_session'
 export type IdentityEntityType = 'person' | 'object'
-export type IdentityMatchStatus = 'confirmed' | 'probable' | 'unknown'
+export type IdentityStatus = 'confirmed' | 'probable' | 'unknown'
 
-export interface IdentityTrackAppearance {
+export interface IdentityObservation {
   track_id: number
   track_code: string
-  category: string
   first_seen_timestamp: number
   last_seen_timestamp: number
   detection_count: number
-  match_confidence: number | null
-  match_status: IdentityMatchStatus
+  match_confidence: number
+  feature_quality: number
   matching_explanation: string
-  unresolved_candidate_code: string | null
+  bbox: { x1: number; y1: number; x2: number; y2: number } | null
   evidence_url: string | null
-  manually_corrected: boolean
-  correction_note: string | null
 }
 
 export interface IdentityRelatedEvent {
-  id: string
+  event_id: string
   event_type: string
-  category: string
   title: string
   timestamp_seconds: number
-  confidence: number
-  severity: string
-  track_codes: string[]
+  involved_track_ids: number[]
 }
 
 export interface EntityIdentity {
   id: string
-  identity_code: string
   source_type: IdentitySourceType
   source_id: string
+  identity_code: string
   entity_type: IdentityEntityType
-  category: string
+  class_name: string
+  status: IdentityStatus
   first_seen_timestamp: number
   last_seen_timestamp: number
   appearance_count: number
-  matching_confidence: number | null
-  status: IdentityMatchStatus
-  matching_explanation: string
   associated_track_ids: number[]
-  associated_track_codes: string[]
-  evidence_urls: string[]
-  related_event_count: number
-  merged_into_code: string | null
-  track_appearances?: IdentityTrackAppearance[]
-  related_events?: IdentityRelatedEvent[]
+  matching_confidence: number
+  matching_explanation: string
+  feature_reference: string
+  evidence_refs: string[]
+  observations: IdentityObservation[]
+  related_events: IdentityRelatedEvent[]
 }
 
 export interface IdentitySearchResponse {
-  items: EntityIdentity[]
+  source_type: IdentitySourceType
+  source_id: string
+  total_unique_people: number
+  total_unique_objects: number
   total: number
-  limit: number
-  offset: number
+  items: EntityIdentity[]
 }
 
-export interface IdentityCounts {
-  unique_people: number
-  unique_objects: number
-  confirmed: number
-  probable: number
-  unknown: number
-}
-
-export async function searchIdentities(params: {
-  sourceType: IdentitySourceType
-  sourceId: string
-  entityType?: IdentityEntityType | ''
-  query?: string
-  minAppearances?: number
-  firstSeenFrom?: number
-  lastSeenTo?: number
-  eventType?: string
+export async function searchEntityIdentities(params: {
+  source_type: IdentitySourceType
+  source_id: string
+  entity_type?: IdentityEntityType
+  identity_code?: string
+  min_appearances?: number
+  first_seen_after?: number
+  last_seen_before?: number
   limit?: number
+  offset?: number
 }): Promise<IdentitySearchResponse> {
-  const response = await apiClient.get<IdentitySearchResponse>('/identities', {
-    params: {
-      source_type: params.sourceType,
-      source_id: params.sourceId,
-      entity_type: params.entityType || undefined,
-      query: params.query?.trim() || undefined,
-      min_appearances: params.minAppearances ?? 1,
-      first_seen_from: params.firstSeenFrom,
-      last_seen_to: params.lastSeenTo,
-      event_type: params.eventType?.trim() || undefined,
-      limit: params.limit ?? 200,
-    },
-  })
+  const response = await apiClient.get<IdentitySearchResponse>('/identities', { params })
   return response.data
 }
 
-export async function getIdentityCounts(
-  sourceType: IdentitySourceType,
-  sourceId: string,
-): Promise<IdentityCounts> {
-  const response = await apiClient.get<IdentityCounts>('/identities/counts', {
-    params: { source_type: sourceType, source_id: sourceId },
-  })
-  return response.data
-}
-
-export async function getIdentity(identityId: string): Promise<EntityIdentity> {
+export async function getEntityIdentity(identityId: string): Promise<EntityIdentity> {
   const response = await apiClient.get<EntityIdentity>(`/identities/${identityId}`)
   return response.data
 }
 
-export async function getIdentityEvidence(
-  identityId: string,
-  trackId: number,
-): Promise<Blob> {
-  const response = await apiClient.get<Blob>(
-    `/identities/${identityId}/tracks/${trackId}/evidence`,
-    { responseType: 'blob' },
-  )
-  return response.data
-}
-
-export async function correctIdentityTrack(params: {
+export async function correctEntityIdentity(params: {
   identityId: string
   trackId: number
   targetIdentityId?: string
   createNewIdentity?: boolean
-  correctionNote: string
-}): Promise<EntityIdentity> {
-  const response = await apiClient.patch<EntityIdentity>(
-    `/identities/${params.identityId}/tracks/${params.trackId}`,
-    {
-      target_identity_id: params.targetIdentityId,
-      create_new_identity: params.createNewIdentity ?? false,
-      correction_note: params.correctionNote || undefined,
-    },
+  correctionNote?: string
+}): Promise<{ identity: EntityIdentity; correction: string }> {
+  if (params.createNewIdentity) {
+    const response = await apiClient.patch<{ identity: EntityIdentity; correction: string }>(
+      `/identities/${params.identityId}/tracks/${params.trackId}`,
+      {
+        create_new_identity: true,
+        correction_note: params.correctionNote,
+      },
+    )
+    return response.data
+  }
+  if (!params.targetIdentityId) {
+    throw new Error('Choose an existing identity or create a separate identity.')
+  }
+  const response = await apiClient.patch<{ identity: EntityIdentity; correction: string }>(
+    `/identities/${params.identityId}/observations/${params.trackId}`,
+    { target_identity_id: params.targetIdentityId },
   )
   return response.data
+}
+
+export async function fetchIdentityEvidenceBlobUrl(imageUrl: string): Promise<string> {
+  const route = imageUrl.replace(/^\/api\/v1\/?/, '')
+  const response = await apiClient.get<Blob>(route, { responseType: 'blob' })
+  return URL.createObjectURL(response.data)
 }
